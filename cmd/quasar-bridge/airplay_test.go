@@ -86,8 +86,18 @@ func TestAirPlayConfigurationIsPassive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AirPlay.Disabled || cfg.AirPlay.DataDir != filepath.Join(state, "airplay") {
+	if !cfg.AirPlay.Disabled || cfg.AirPlay.DataDir != filepath.Join(state, "airplay") {
 		t.Fatalf("defaults=%+v", cfg.AirPlay)
+	}
+	if omitted, err := newAirPlayControl(t.Context(), cfg.AirPlay); err != nil || omitted != nil {
+		t.Fatalf("omitted airplay must stay disabled: %+v %v", omitted, err)
+	}
+	cfg, err = readConfig(configFile(t, `{"mode":"hybrid","llm_base_url":"http://127.0.0.1:1/v1","llm_model":"offline","airplay":{"disabled":false}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AirPlay.Disabled || cfg.AirPlay.DataDir != filepath.Join(state, "airplay") {
+		t.Fatalf("explicit enable lost: %+v", cfg.AirPlay)
 	}
 	c, err := newAirPlayControl(t.Context(), cfg.AirPlay)
 	if err != nil {
@@ -99,7 +109,7 @@ func TestAirPlayConfigurationIsPassive(t *testing.T) {
 	if _, err := os.Stat(state); !os.IsNotExist(err) {
 		t.Fatalf("constructor created state directory: %v", err)
 	}
-	for _, body := range []string{`{"airplay":{"listen_address":"bad"}}`, `{"airplay":{"output_delay_ms":-1}}`, `{"airplay":{"output_delay_ms":5001}}`, `{"airplay":{"initial_volume_db":100}}`} {
+	for _, body := range []string{`{"airplay":{"disabled":false,"listen_address":"bad"}}`, `{"airplay":{"output_delay_ms":-1}}`, `{"airplay":{"output_delay_ms":5001}}`, `{"airplay":{"disabled":false,"initial_volume_db":100}}`} {
 		if _, err := readConfig(configFile(t, body)); err == nil {
 			t.Errorf("accepted %s", body)
 		}

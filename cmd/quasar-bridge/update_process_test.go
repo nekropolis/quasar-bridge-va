@@ -77,7 +77,7 @@ func TestUpdateToolsProcess(t *testing.T) {
 				}
 			}))
 			defer api.Close()
-			body, _ := json.Marshal(map[string]any{"mode": "hybrid", "llm_api": apiName, "llm_base_url": api.URL + "/v1", "llm_model": "fixture", "assistant_tools": map[string]any{"enabled": true, "web": false, "history": false, "time": false}})
+			body, _ := json.Marshal(map[string]any{"mode": "hybrid", "llm_api": apiName, "llm_base_url": api.URL + "/v1", "llm_model": "fixture", "assistant_tools": map[string]any{"enabled": true, "web": false, "history": false, "time": false, "updates": true}})
 			path := configFile(t, string(body))
 			child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestUpdateToolsProcess$")
 			for _, entry := range os.Environ() {
