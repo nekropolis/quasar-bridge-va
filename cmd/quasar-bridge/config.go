@@ -25,30 +25,35 @@ type progressConfig struct {
 }
 
 type config struct {
-	AirPlay            airPlayConfig        `json:"airplay"`
-	DialogueContext    dialogue.Config      `json:"dialogue_context"`
-	LocalProgress      progressConfig       `json:"local_progress"`
-	AssistantTools     assistant.Config     `json:"assistant_tools"`
-	ConversationLog    journal.Config       `json:"conversation_log"`
-	Listen             string               `json:"listen"`
-	Upstream           string               `json:"upstream"`
-	TLSCert            string               `json:"tls_cert"`
-	TLSKey             string               `json:"tls_key"`
-	AllowedIPs         []string             `json:"allowed_ips"`
-	Mode               string               `json:"mode"`
-	LLMBaseURL         string               `json:"llm_base_url"`
-	LLMModel           string               `json:"llm_model"`
-	LLMAPI             string               `json:"llm_api"`
-	LLMChatGPTAuthFile string               `json:"llm_chatgpt_auth_file"`
-	LLMReasoningEffort string               `json:"llm_reasoning_effort"`
-	LLMMaxOutputTokens int                  `json:"llm_max_output_tokens"`
-	LLMHostedTools     []string             `json:"llm_hosted_tools"`
-	LLMChatParameters  map[string]any       `json:"llm_chat_parameters"`
-	LLMStripPrefixes   []string             `json:"llm_strip_prefixes"`
-	LLMTTSMarkup       bool                 `json:"llm_tts_markup"`
-	HomeWarmArea       string               `json:"home_warm_area"`
-	ListenAfterReply   bool                 `json:"listen_after_reply"`
-	Routing            bridge.RoutingConfig `json:"routing"`
+	AirPlay            airPlayConfig           `json:"airplay"`
+	DialogueContext    dialogue.Config         `json:"dialogue_context"`
+	LocalProgress      progressConfig          `json:"local_progress"`
+	AssistantTools     assistant.Config        `json:"assistant_tools"`
+	ConversationLog    journal.Config          `json:"conversation_log"`
+	Listen             string                  `json:"listen"`
+	Upstream           string                  `json:"upstream"`
+	TLSCert            string                  `json:"tls_cert"`
+	TLSKey             string                  `json:"tls_key"`
+	AllowedIPs         []string                `json:"allowed_ips"`
+	Mode               string                  `json:"mode"`
+	LLMBaseURL         string                  `json:"llm_base_url"`
+	LLMModel           string                  `json:"llm_model"`
+	LLMAPI             string                  `json:"llm_api"`
+	LLMChatGPTAuthFile string                  `json:"llm_chatgpt_auth_file"`
+	LLMReasoningEffort string                  `json:"llm_reasoning_effort"`
+	LLMMaxOutputTokens int                     `json:"llm_max_output_tokens"`
+	LLMHostedTools     []string                `json:"llm_hosted_tools"`
+	LLMChatParameters  map[string]any          `json:"llm_chat_parameters"`
+	LLMStripPrefixes   []string                `json:"llm_strip_prefixes"`
+	LLMTTSMarkup       bool                    `json:"llm_tts_markup"`
+	HomeWarmArea       string                  `json:"home_warm_area"`
+	ListenAfterReply   bool                    `json:"listen_after_reply"`
+	FollowupFilter     bridge.FollowupFilter   `json:"followup_filter"`
+	FollowupReprompt   bridge.FollowupReprompt `json:"followup_reprompt"`
+	CloudFallback      bridge.CloudFallback    `json:"cloud_fallback"`
+	EllipsisFollowup   bridge.EllipsisFollowup `json:"ellipsis_followup"`
+	VAEvents           bool                    `json:"va_events"`
+	Routing            bridge.RoutingConfig    `json:"routing"`
 }
 
 func readConfig(path string) (config, error) {
@@ -66,7 +71,7 @@ func readConfigForCommand(path string, modelOptional bool) (config, error) {
 }
 
 func parseConfig(raw []byte, modelOptional bool) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true}
+	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true, FollowupFilter: bridge.DefaultFollowupFilter(), FollowupReprompt: bridge.DefaultFollowupReprompt(), CloudFallback: bridge.DefaultCloudFallback(), EllipsisFollowup: bridge.DefaultEllipsisFollowup()}
 	if json.Unmarshal(raw, &cfg, json.RejectUnknownMembers(true)) != nil {
 		return cfg, errors.New("invalid configuration JSON")
 	}
@@ -201,6 +206,23 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 	}
 	if cfg.LocalProgress.AfterMS < 100 || cfg.LocalProgress.AfterMS > 10000 || cfg.LocalProgress.IntervalMS < 1000 || cfg.LocalProgress.IntervalMS > 10000 {
 		return cfg, errors.New("invalid local_progress timing")
+	}
+	if cfg.FollowupReprompt.MinMatched < 1 || cfg.FollowupReprompt.MinMatched > 100 {
+		return cfg, errors.New("followup_reprompt.min_matched must be between 1 and 100")
+	}
+	if cfg.FollowupReprompt.Enabled && strings.TrimSpace(cfg.FollowupReprompt.Text) == "" {
+		return cfg, errors.New("followup_reprompt.text is required")
+	}
+	if cfg.CloudFallback.TimeoutMS < 0 || cfg.CloudFallback.TimeoutMS > 30000 {
+		return cfg, errors.New("cloud_fallback.timeout_ms must be between 0 and 30000")
+	}
+	if cfg.EllipsisFollowup.Enabled {
+		if cfg.EllipsisFollowup.WindowS < 1 || cfg.EllipsisFollowup.WindowS > 120 {
+			return cfg, errors.New("ellipsis_followup.window_s must be between 1 and 120")
+		}
+		if cfg.EllipsisFollowup.MaxWords < 2 || cfg.EllipsisFollowup.MaxWords > 10 {
+			return cfg, errors.New("ellipsis_followup.max_words must be between 2 and 10")
+		}
 	}
 	if err := cfg.DialogueContext.Validate(); err != nil {
 		return cfg, err

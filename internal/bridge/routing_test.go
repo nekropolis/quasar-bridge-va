@@ -329,3 +329,30 @@ func TestBridgeUpdateRequestsNeverReachHomeClassifier(t *testing.T) {
 		}
 	}
 }
+
+func TestRefusalContainsAlone(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.Refusal.ContainsAlone = []string{"так просто не объяснить", "отправила ссылку", "ссылку в приложение"}
+	e := &Engine{}
+	if err := e.SetRouting(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{
+		"Хм, это так просто не объяснить. Могу отправить ссылку.",
+		"Вот что нашлось. Я отправила   ссылку в приложение Дом с Алисой.",
+		"Не могу ответить на это.",
+	} {
+		if !e.IsRefusal(s) {
+			t.Fatalf("refusal missed: %q", s)
+		}
+	}
+	for _, s := range []string{"Сорок один рубль шестьдесят четыре копейки.", "Ссылка — это адрес страницы."} {
+		if e.IsRefusal(s) {
+			t.Fatalf("false refusal: %q", s)
+		}
+	}
+	cfg.Refusal.ContainsAlone = []string{" "}
+	if err := e.SetRouting(cfg); err == nil {
+		t.Fatal("empty contains_alone term accepted")
+	}
+}

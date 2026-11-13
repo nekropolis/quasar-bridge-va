@@ -327,10 +327,23 @@ func main() {
 			}()
 		}
 
+		var vaEvents *bridge.EventSink
+		if cfg.VAEvents && cfg.LLMBaseURL != "" {
+			vaEvents = &bridge.EventSink{URL: strings.TrimRight(cfg.LLMBaseURL, "/") + "/va/event", APIKey: os.Getenv("QUASAR_LLM_API_KEY"), Model: cfg.LLMModel}
+		}
 		proxy.NewSession = func(ctx context.Context, up, down bridge.Sender) bridge.Session {
 			n := bridge.NewNative(ctx, up, down, engine)
 			n.GateText = false
 			n.ShouldListen = cfg.ListenAfterReply
+			filter := cfg.FollowupFilter
+			n.Filler = &filter
+			reprompt := cfg.FollowupReprompt
+			n.Reprompt = &reprompt
+			fallback := cfg.CloudFallback
+			n.CloudFallback = &fallback
+			ellipsis := cfg.EllipsisFollowup
+			n.Ellipsis = &ellipsis
+			n.Events = vaEvents
 			if cfg.LocalProgress.Enabled {
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond
 				n.ProgressInterval = time.Duration(cfg.LocalProgress.IntervalMS) * time.Millisecond

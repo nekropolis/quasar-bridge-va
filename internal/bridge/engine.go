@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"log/slog"
 	"quasarbridge/internal/configvoice"
 	"quasarbridge/internal/dialogue"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -287,7 +289,13 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
 		return RouteDecision{Route: "playback", Source: "playback"}
 	}
-	if d, ok := p.match(text); ok {
+	skip := skipRulesFrom(ctx)
+	if len(skip) > 0 {
+		if d, ok := p.match(text); ok && slices.Contains(skip, d.Rule) {
+			slog.Info("routing_rule_skipped", "rule", d.Rule, "reason", "ellipsis_followup")
+		}
+	}
+	if d, ok := p.matchSkip(text, skip); ok {
 		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
 			d.Route = "music"
 		}

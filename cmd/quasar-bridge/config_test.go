@@ -253,3 +253,35 @@ func TestMCPExampleAndUnknownConfiguration(t *testing.T) {
 		t.Fatal("unknown MCP option accepted")
 	}
 }
+
+func TestVARepromptCloudFallbackConfig(t *testing.T) {
+	cfg, err := readConfig(configFile(t, `{"mode":"observe"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.FollowupReprompt.Enabled || cfg.FollowupReprompt.MinMatched != 3 || cfg.FollowupReprompt.Text == "" {
+		t.Fatal("wrong reprompt defaults")
+	}
+	if !cfg.CloudFallback.Enabled || cfg.CloudFallback.TimeoutMS != 7000 || cfg.CloudFallback.Filler == "" || cfg.VAEvents {
+		t.Fatal("wrong cloud fallback defaults")
+	}
+	if !cfg.FollowupFilter.Enabled || !cfg.EllipsisFollowup.Enabled || cfg.EllipsisFollowup.WindowS != 15 {
+		t.Fatal("wrong follow-up defaults")
+	}
+	cfg, err = readConfig(configFile(t, `{"mode":"observe","va_events":true,"followup_reprompt":{"enabled":false,"min_matched":4,"text":"x"},"cloud_fallback":{"enabled":false,"timeout_ms":0},"followup_filter":{"enabled":false},"ellipsis_followup":{"enabled":false}}`))
+	if err != nil || !cfg.VAEvents || cfg.FollowupReprompt.Enabled || cfg.FollowupReprompt.MinMatched != 4 || cfg.CloudFallback.Enabled || cfg.CloudFallback.TimeoutMS != 0 || len(cfg.CloudFallback.Sources) == 0 || cfg.FollowupFilter.Enabled || cfg.EllipsisFollowup.Enabled {
+		t.Fatalf("overlay failed: %+v %v", cfg, err)
+	}
+	for _, bad := range []string{
+		`{"mode":"observe","followup_reprompt":{"min_matched":0}}`,
+		`{"mode":"observe","followup_reprompt":{"text":" "}}`,
+		`{"mode":"observe","cloud_fallback":{"timeout_ms":40000}}`,
+		`{"mode":"observe","cloud_fallback":{"bogus":1}}`,
+		`{"mode":"observe","ellipsis_followup":{"window_s":0}}`,
+		`{"mode":"observe","ellipsis_followup":{"max_words":1}}`,
+	} {
+		if _, err := readConfig(configFile(t, bad)); err == nil {
+			t.Fatalf("accepted %s", bad)
+		}
+	}
+}

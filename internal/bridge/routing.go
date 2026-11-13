@@ -8,6 +8,7 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/update"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -41,6 +42,8 @@ type RefusalConfig struct {
 	Enabled     bool     `json:"enabled"`
 	Prefixes    []string `json:"prefixes"`
 	ContainsAny []string `json:"contains_any"`
+	// Phrases that mark a refusal anywhere in the answer, without a prefix.
+	ContainsAlone []string `json:"contains_alone,omitempty"`
 }
 type RouteDecision struct {
 	ticket   dialogue.Ticket
@@ -65,6 +68,7 @@ type RoutingPolicy struct {
 	classifierEnabled               bool
 	refusalEnabled                  bool
 	refusalPrefixes, refusalPhrases []string
+	refusalAlone                    []string
 	revision                        string
 }
 
@@ -228,6 +232,12 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 	if p.refusalPhrases, err = foldTerms(cfg.Refusal.ContainsAny, true); err != nil {
 		return nil, errors.New("invalid refusal contains_any")
 	}
+	if p.refusalAlone, err = foldTerms(cfg.Refusal.ContainsAlone, true); err != nil {
+		return nil, errors.New("invalid refusal contains_alone")
+	}
+	for i, term := range p.refusalAlone {
+		p.refusalAlone[i] = strings.ReplaceAll(term, "ё", "е")
+	}
 	if p.refusalEnabled && (len(p.refusalPrefixes) == 0 || len(p.refusalPhrases) == 0) {
 		return nil, errors.New("enabled refusal matcher requires prefixes and contains_any")
 	}
@@ -240,8 +250,15 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 	return p, nil
 }
 func (p *RoutingPolicy) match(text string) (RouteDecision, bool) {
+	return p.matchSkip(text, nil)
+}
+
+func (p *RoutingPolicy) matchSkip(text string, skip []string) (RouteDecision, bool) {
 	lower := strings.ToLower(text)
 	for _, r := range p.rules {
+		if slices.Contains(skip, r.name) {
+			continue
+		}
 		if len(r.any) > 0 && !containsOne(lower, r.any) {
 			continue
 		}
@@ -297,6 +314,14 @@ func (p *RoutingPolicy) isRefusal(text string) bool {
 		return false
 	}
 	s := strings.Join(strings.Fields(strings.ToLower(text)), " ")
+	if len(p.refusalAlone) > 0 {
+		folded := strings.ReplaceAll(s, "ё", "е")
+		for _, term := range p.refusalAlone {
+			if strings.Contains(folded, term) {
+				return true
+			}
+		}
+	}
 	for _, prefix := range p.refusalPrefixes {
 		if strings.HasPrefix(s, prefix) {
 			return containsOne(s, p.refusalPhrases)
