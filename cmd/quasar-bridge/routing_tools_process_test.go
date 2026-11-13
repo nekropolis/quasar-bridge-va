@@ -66,7 +66,7 @@ func TestRoutingToolsProcess(t *testing.T) {
 		_ = json.MarshalWrite(w, map[string]any{"choices": []any{map[string]any{"message": message}}})
 	}))
 	defer api.Close()
-	path := configFile(t, fmt.Sprintf(`{"mode":"hybrid","airplay":{"disabled":true},"llm_base_url":%q,"llm_model":"fixture","assistant_tools":{"enabled":true,"time":false},"routing":{"rules":[{"name":"weather","route":"yandex","match":{"contains_any":["погода"]}}],"default_route":"yandex"}}`, api.URL))
+	path := configFile(t, fmt.Sprintf(`{"mode":"hybrid","airplay":{"disabled":true},"llm_base_url":%q,"llm_model":"fixture","assistant_tools":{"enabled":true,"time":false,"configuration":true},"routing":{"rules":[{"name":"weather","route":"yandex","match":{"contains_any":["погода"]}}],"default_route":"yandex"}}`, api.URL))
 	child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestRoutingToolsProcess$")
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "QUASAR_") {
