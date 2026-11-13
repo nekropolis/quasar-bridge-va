@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"quasarbridge/internal/reply"
 )
 
 type Message struct {
@@ -154,9 +156,13 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
 			Message      Message `json:"message"`
 			FinishReason string  `json:"finish_reason"`
 		} `json:"choices"`
+		VAListen *bool `json:"va_listen"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
 		return Message{}, errors.New("invalid LLM response")
+	}
+	if !structured && result.VAListen != nil && !*result.VAListen {
+		reply.SuppressListening(ctx)
 	}
 	if len(result.Choices) == 0 || (strings.TrimSpace(result.Choices[0].Message.Content) == "" && len(result.Choices[0].Message.ToolCalls) == 0) {
 		return Message{}, errors.New("LLM returned no answer")

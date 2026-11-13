@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/binary"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -19,19 +20,23 @@ import (
 
 // progress starts only after the executor is known. Stop joins the pump so no
 // partial can race with the final answer or continue after cancellation.
-func (n *Native) progress(p *nativeRequest) func() {
+func (n *Native) progress(p *nativeRequest) func() { return n.progressAfter(p, n.ProgressAfter) }
+
+func (n *Native) progressAfter(p *nativeRequest, after time.Duration) func() {
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	n.wg.Go(func() {
 		defer close(done)
-		timer := time.NewTimer(n.ProgressAfter)
-		defer timer.Stop()
-		select {
-		case <-stop:
-			return
-		case <-p.ctx.Done():
-			return
-		case <-timer.C:
+		if after > 0 {
+			timer := time.NewTimer(after)
+			defer timer.Stop()
+			select {
+			case <-stop:
+				return
+			case <-p.ctx.Done():
+				return
+			case <-timer.C:
+			}
 		}
 		n.mu.Lock()
 		if p.canceled || p.ctx.Err() != nil {
@@ -106,7 +111,11 @@ func (n *Native) beginDeferred(p *nativeRequest) error {
 	if err := n.deferredPart(p, "", false); err != nil {
 		return err
 	}
-	// Obtain the provider's actual Opus headers; its speech payload is discarded.
+	// Obtain the provider's actual Opus headers. The speech payload is discarded
+	// unless this segment is a spoken cloud-fallback filler.
+	if p.progressSpeech != "" {
+		return n.synthesize(p, p.progressSpeech)
+	}
 	return n.synthesize(p, "а")
 }
 func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
@@ -119,6 +128,12 @@ func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
 	if last {
 		silentPlayback := n.hasSilentPlayback(p)
 		base.ShouldListen = n.ShouldListen && !silentPlayback && reply.ListeningAllowed(p.ctx)
+		if base.ShouldListen {
+			n.mu.Lock()
+			n.lastAsked = strings.Contains(text, "?")
+			n.listenArmed = time.Now()
+			n.mu.Unlock()
+		}
 		if silentPlayback {
 			voice = ""
 		}

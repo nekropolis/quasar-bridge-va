@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +53,7 @@ type nativeRequest struct {
 	audioInput                      []byte
 	audioInputDone                  bool
 	inputWhisper                    bool
+	afterAnswer                     bool
 	streaming                       bool
 	listenOnStreamStart             bool
 	partial                         uint32
@@ -85,7 +87,27 @@ type nativeRequest struct {
 	soundDirective                  *soundDirective
 	soundSealed                     bool
 	expires                         *time.Timer
+	followUp                        bool
+	silent                          bool
+	played                          bool
+	prevAsked                       bool
+	source                          string
+	matched                         int
+	partials                        int
+	partialText                     bool
+	cloudAnswered                   bool
+	cloudStreaming                  bool
+	cloudBytes                      int
+	cloudLogged                     bool
+	cloudTimer                      *time.Timer
+	progressSpeech                  string
 }
+
+// Short stop words inside the post-reply listen window close it quietly.
+var vaStopRE = regexp.MustCompile(`(?i)^\s*(?:алиса[,\s]+)?(?:стоп|хватит|замолчи|помолчи|отмена|отмени|тихо|достаточно)(?:\s+(?:алиса|пожалуйста))?[\s.!?,]*$`)
+
+func vaIsStop(text string) bool { return vaStopRE.MatchString(text) }
+
 type Native struct {
 	connectionScope  string
 	ctx              context.Context
@@ -104,6 +126,23 @@ type Native struct {
 	DecisionDelay    time.Duration
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
+	// listenArmed is set when a local reply asked the speaker to keep listening.
+	listenArmed time.Time
+	lastAsked   bool
+	// Filler drops acknowledgements in the follow-up window. Nil disables it.
+	Filler *FollowupFilter
+	// Reprompt asks once to repeat an empty follow-up that still had voice activity.
+	Reprompt     *FollowupReprompt
+	repromptUsed bool
+	lastVoice    *nativeRequest
+	// CloudFallback replaces an empty, refused or late cloud answer. Nil keeps
+	// the upstream refusal-only fallback.
+	CloudFallback *CloudFallback
+	// Ellipsis skips named keyword rules for a short «а …» just after an answer.
+	Ellipsis   *EllipsisFollowup
+	lastAnswer time.Time
+	// Events records route, cloud and follow-up outcomes. Nil disables it.
+	Events *EventSink
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
@@ -117,6 +156,9 @@ func (n *Native) Close() {
 		p.canceled = true
 		p.cancel()
 		p.expires.Stop()
+		if p.cloudTimer != nil {
+			p.cloudTimer.Stop()
+		}
 	}
 	n.mu.Unlock()
 	n.wg.Wait()
@@ -143,7 +185,26 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		}
 		timestamps := stat.GetTimestamps()
 		reported := func(value string) bool { return value != "" && value != "0" }
+		n.mu.Lock()
+		if q := n.requests[stat.GetRequestMessageId()]; q != nil {
+			q.played = true
+		}
+		if reported(timestamps.GetOnSoundPlayerBeginTime()) || reported(timestamps.GetOnPlayerBegin()) || reported(timestamps.GetOnSoundPlayerEndTime()) || reported(timestamps.GetOnPlayerEnd()) {
+			n.lastAnswer = time.Now()
+		}
+		n.mu.Unlock()
 		slog.Info("native_playback_status", "request", requestTag(stat.GetRequestMessageId()), "error_class", kind, "playback_reported", reported(timestamps.GetOnSoundPlayerBeginTime()) || reported(timestamps.GetOnPlayerBegin()), "finished_reported", reported(timestamps.GetOnSoundPlayerEndTime()) || reported(timestamps.GetOnPlayerEnd()))
+	}
+	if e.GetMatchedUser() != nil {
+		n.mu.Lock()
+		q := n.requests[e.GetHeader().GetRefMessageId()]
+		if q == nil {
+			q = n.lastVoice
+		}
+		if q != nil && !q.final && !q.started {
+			q.matched++
+		}
+		n.mu.Unlock()
 	}
 	var req *request.TAliceRequestProto
 	switch f.Kind() {
@@ -187,6 +248,14 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 
 		slog.Info("native_request_shape", "request", requestTag(id), "text_bytes", len(p.text), "event_type", req.GetRequest().GetEvent().GetType().String(), "stream", e.GetHeader().GetStreamId(), "unknown_request_bytes", len(req.ProtoReflect().GetUnknown()), "payload_bytes", len(req.GetRequest().GetEvent().GetPayloadRaw()))
 		n.mu.Lock()
+		if !p.isText && n.Ellipsis.InWindow(n.lastAnswer, time.Now()) {
+			p.afterAnswer = true
+		}
+		if !p.isText && !n.listenArmed.IsZero() && time.Since(n.listenArmed) < 2*time.Minute {
+			p.followUp = true
+			p.prevAsked = n.lastAsked
+		}
+		n.listenArmed = time.Time{}
 		if n.requests[id] != nil {
 			n.mu.Unlock()
 			cancel()
@@ -207,6 +276,12 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			defer n.mu.Unlock()
 			p.canceled = true
 			p.cancel()
+			if p.cloudTimer != nil {
+				p.cloudTimer.Stop()
+			}
+			if n.lastVoice == p {
+				n.lastVoice = nil
+			}
 			delete(n.requests, p.id)
 			delete(n.tts, p.ttsID)
 			delete(n.tts, p.progressTTS)
@@ -221,8 +296,34 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 				}
 			}
 		})
+		var vaStale []string
+		if !p.isText {
+			n.lastVoice = p
+			if !p.followUp {
+				n.repromptUsed = false
+			}
+			for _, q := range n.requests {
+				if q.canceled || q.played || q.cloud || q.silent || !q.local || q.soundRequest != nil || q.soundDirective != nil {
+					continue
+				}
+				q.canceled = true
+				q.cancel()
+				if q.cloudTimer != nil {
+					q.cloudTimer.Stop()
+				}
+				for _, ttsID := range []string{q.ttsID, q.progressTTS} {
+					if ttsID != "" {
+						vaStale = append(vaStale, ttsID)
+					}
+				}
+				slog.Info("native_va_interrupt", "request", requestTag(q.id), "by", requestTag(id))
+			}
+		}
 		n.requests[id] = p
 		n.mu.Unlock()
+		for _, ttsID := range vaStale {
+			_ = n.sendCancel(ctx, ttsID)
+		}
 		if p.gated {
 			gated, err := wire.EnableApproval(f)
 			if err != nil {
@@ -262,6 +363,12 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		if p != nil {
 			p.canceled = true
 			p.cancel()
+			if p.cloudTimer != nil {
+				p.cloudTimer.Stop()
+			}
+			if n.lastVoice == p {
+				n.lastVoice = nil
+			}
 			ttsID = p.ttsID
 		}
 		n.mu.Unlock()
@@ -428,7 +535,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 				}
 				p.audioIsProgress = p.ttsID == p.progressTTS
 				p.audio.next()
-				p.audio.source.discardAudio = p.audioIsProgress
+				p.audio.source.discardAudio = p.audioIsProgress && p.progressSpeech == ""
 				if p.audioStarted {
 					p.audioWaiting = false
 					n.mu.Unlock()
@@ -447,6 +554,14 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		return n.down(ctx, k, out)
 	}
 
+	if f.Kind() == "TtsSpeak" || f.Kind() == "AliceResponse" || f.Kind() == "DeferredAliceResponse" {
+		if p.cloud && !p.cloudAnswered {
+			p.cloudAnswered = true
+			if p.cloudTimer != nil {
+				p.cloudTimer.Stop()
+			}
+		}
+	}
 	if f.Kind() == "TtsSpeak" {
 		p.ttsStarted = true
 		if p.local || p.canceled {
@@ -462,39 +577,43 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		for _, card := range r.GetResponse().GetCards() {
 			text += card.GetText() + " "
 		}
+		voice := r.GetVoiceResponse().GetOutputSpeech().GetText()
 		if strings.TrimSpace(text) == "" {
-			text = r.GetVoiceResponse().GetOutputSpeech().GetText()
+			text = voice
 		}
-
-		if resolver, ok := n.resolver.(FallbackResolver); ok && n.isRefusal(text) {
-			p.local = true
-			if n.OnRoute != nil {
-				n.OnRoute(p.id, "llm")
-			}
-			p.ttsID = newID()
-			n.tts[p.ttsID] = p
-			query := p.text
-			n.mu.Unlock()
-			n.wg.Go(func() {
-				result, err := resolver.Fallback(p.ctx, query)
-				if p.ctx.Err() != nil {
-					return
-				}
-				if errors.Is(err, context.Canceled) {
-					n.discardStale(p)
-					return
-				}
-				if err != nil {
-					n.discardSound(p)
-					result.Answer = "Сейчас не получилось получить ответ локальной модели."
-				}
-				_ = n.sendCancel(p.ctx, p.id)
-				if err := n.reply(p, result); err != nil {
-					slog.Warn("native_reply_failed", "request", requestTag(p.id))
-				}
-				slog.Info("native_fallback", "request", requestTag(p.id), "route", "llm")
-			})
+		// A card can hide a spoken non-answer, so the voice line is checked too.
+		refused := n.isRefusal(text) || (strings.TrimSpace(voice) != "" && voice != text && n.isRefusal(voice))
+		reason := ""
+		if refused && (n.CloudFallback == nil || n.CloudFallback.OnRefusal || !n.CloudFallback.Enabled) {
+			reason = "refusal"
+		} else if strings.TrimSpace(text) == "" && !r.GetResponse().GetIsStreaming() && len(r.GetResponse().GetDirectives()) == 0 && n.CloudFallback != nil && n.CloudFallback.OnEmpty && n.CloudFallback.allowed(p.text, p.source) {
+			reason = "empty"
+		}
+		if _, ok := n.resolver.(FallbackResolver); ok && reason != "" {
+			n.cloudFallbackUnlock(p, reason)
 			return nil
+		}
+	}
+	if p.cloud && !p.cloudLogged {
+		if r := e.GetAliceResponse(); r != nil {
+			p.cloudBytes += len(cloudResponseText(r))
+			if r.GetResponse().GetIsStreaming() {
+				p.cloudStreaming = true
+			} else {
+				kind := "answer"
+				if !canReplaceResponse(r) {
+					kind = "directives"
+				} else if p.cloudBytes == 0 {
+					kind = "empty"
+				}
+				n.emitCloudLocked(p, kind)
+			}
+		}
+		if d := e.GetDeferredAliceResponse(); d != nil && p.cloudStreaming {
+			p.cloudBytes += len(d.GetBaseResponse().GetText())
+			if d.GetIsLast() {
+				n.emitCloudLocked(p, "streamed")
+			}
 		}
 	}
 	emptyFinal := false
@@ -509,6 +628,12 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		slog.Info("native_server_ready", "request", requestTag(p.id))
 	case "AsrResult":
 		asr := e.GetAsrResult()
+		if !asr.GetEndOfUtt() {
+			p.partials++
+			if len(asr.GetRecognition()) > 0 && (asr.GetRecognition()[0].GetNormalized() != "" || len(asr.GetRecognition()[0].GetWords()) > 0) {
+				p.partialText = true
+			}
+		}
 		aggregate := asr.GetAggregatedRecognition()
 		if aggregate != nil && (!p.aggregateSeen || (aggregate.GetIsFinal() && !p.aggregateFinalSeen)) {
 			p.aggregateSeen = true
@@ -580,12 +705,27 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				return
 			}
 		}
+		if n.closeFollowUp(p, text) {
+			return
+		}
 		result := Resolution{Route: "yandex"}
 		var err error
 		if n.resolver != nil && strings.TrimSpace(text) != "" {
 			if routed, ok := n.resolver.(RoutedResolver); ok {
-				decision := routed.Decide(p.ctx, text)
 				n.mu.Lock()
+				afterAnswer := p.afterAnswer
+				n.mu.Unlock()
+				dctx := p.ctx
+				if afterAnswer && n.Ellipsis.IsEllipsis(text) {
+					dctx = WithSkipRules(p.ctx, n.Ellipsis.SkipRules)
+					slog.Info("native_ellipsis_followup", "request", requestTag(p.id))
+				}
+				decision := routed.Decide(dctx, text)
+				n.mu.Lock()
+				p.source = decision.Source
+				if strings.TrimSpace(text) != "" {
+					n.repromptUsed = false
+				}
 				p.listenOnStreamStart = decision.Source == "dialogue_retry"
 				n.mu.Unlock()
 				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
@@ -652,8 +792,21 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 					err = n.up(p.ctx, websocket.MessageBinary, p.continuation)
 				}
 			}
+			if err == nil && n.CloudFallback != nil && n.CloudFallback.TimeoutMS > 0 && n.CloudFallback.allowed(text, p.source) {
+				if _, ok := n.resolver.(FallbackResolver); ok {
+					p.cloudTimer = time.AfterFunc(time.Duration(n.CloudFallback.TimeoutMS)*time.Millisecond, func() {
+						n.mu.Lock()
+						if p.cloudAnswered || p.ttsStarted || p.canceled || p.local || p.ctx.Err() != nil {
+							n.mu.Unlock()
+							return
+						}
+						n.cloudFallbackUnlock(p, "timeout")
+					})
+				}
+			}
+			matched, partials := p.matched, p.partials
 			n.mu.Unlock()
-			slog.Info("native_route", "request", requestTag(p.id), "route", "yandex", "sent", err == nil)
+			slog.Info("native_route", "request", requestTag(p.id), "route", "yandex", "sent", err == nil, "matched", matched, "partials", partials)
 			return
 		}
 		p.local = true
@@ -692,8 +845,14 @@ func (n *Native) reply(p *nativeRequest, result Resolution) error {
 		requestID = p.id
 	}
 	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(text)}, HasVoiceResponse: true}, Response: &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}}}
-	silentPlayback := n.hasSilentPlayback(p)
+	silentPlayback := n.hasSilentPlayback(p) || p.silent
 	answer.VoiceResponse.ShouldListen = n.ShouldListen && !silentPlayback && reply.ListeningAllowed(p.ctx)
+	if answer.VoiceResponse.ShouldListen {
+		n.mu.Lock()
+		n.lastAsked = strings.Contains(text, "?")
+		n.listenArmed = time.Now()
+		n.mu.Unlock()
+	}
 	if silentPlayback {
 		answer.VoiceResponse.HasVoiceResponse = false
 		answer.VoiceResponse.OutputSpeech.Text = new("")

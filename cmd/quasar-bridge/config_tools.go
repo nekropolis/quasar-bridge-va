@@ -63,6 +63,7 @@ var voiceSettings = []voiceSetting{
 	{"routing.refusal.enabled", "Логическое: передавать запрос LLM после отказа Алисы.", "", false},
 	{"routing.refusal.prefixes", "Массив префиксов отказа; при включённом детекторе непустой.", "", false},
 	{"routing.refusal.contains_any", "Массив фраз отказа; при включённом детекторе непустой.", "", false},
+	{"routing.refusal.contains_alone", "Массив фраз отказа, которые срабатывают в любом месте ответа без префикса. Пустой массив отключает только этот список.", "", false},
 	{"assistant_tools.web", "Логическое: чтение веб-страниц.", "", true},
 	{"assistant_tools.history", "Логическое: поиск в журнале диалогов.", "", true},
 	{"assistant_tools.time", "Логическое: инструмент текущего времени.", "", true},
