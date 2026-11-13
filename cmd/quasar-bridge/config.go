@@ -72,6 +72,10 @@ func readConfigForCommand(path string, modelOptional bool) (config, error) {
 
 func parseConfig(raw []byte, modelOptional bool) (config, error) {
 	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true, FollowupFilter: bridge.DefaultFollowupFilter(), FollowupReprompt: bridge.DefaultFollowupReprompt(), CloudFallback: bridge.DefaultCloudFallback(), EllipsisFollowup: bridge.DefaultEllipsisFollowup()}
+	// Omitted keys stay closed. Explicit true/false in the file still wins.
+	cfg.AssistantTools.Updates = false
+	cfg.AssistantTools.Configuration = false
+	cfg.AirPlay.Disabled = true
 	if json.Unmarshal(raw, &cfg, json.RejectUnknownMembers(true)) != nil {
 		return cfg, errors.New("invalid configuration JSON")
 	}
