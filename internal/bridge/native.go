@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"quasarbridge/internal/llm"
 	"regexp"
 	"strings"
 	"sync"
@@ -735,7 +736,11 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				if decision.Route != "yandex" && n.ProgressAfter > 0 {
 					stop = n.progress(p)
 				}
-				result, err = routed.ResolveDecision(p.ctx, text, decision)
+				rctx := p.ctx
+				if n.LocalVoice.Applies(decision.Rule) {
+					rctx = llm.WithHeader(p.ctx, "X-VA-Voice", "male")
+				}
+				result, err = routed.ResolveDecision(rctx, text, decision)
 				if err == nil && result.Route == "llm" && n.LocalVoice.Applies(decision.Rule) {
 					n.speakLocal(p, decision.Rule, cmp.Or(result.speech, result.Answer))
 				}

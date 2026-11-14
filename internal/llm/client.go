@@ -208,6 +208,9 @@ func (c *Client) post(ctx context.Context, path string, request any) ([]byte, er
 		return nil, errors.New("invalid LLM endpoint")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for _, h := range extraHeaders(ctx) {
+		req.Header.Set(h[0], h[1])
+	}
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
