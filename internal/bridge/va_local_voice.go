@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"quasarbridge/internal/reply"
 	"quasarbridge/internal/sound"
 )
 
@@ -27,10 +28,24 @@ type LocalVoice struct {
 	Rules     []string `json:"rules,omitempty"`
 	Endpoint  string   `json:"endpoint"`
 	TimeoutMS int      `json:"timeout_ms"`
+	// ListenURL (station-wakeword «POST /api/listen» on this bridge's speaker)
+	// opens the microphone after the MP3 has played, when the core allows
+	// listening. The next utterance within FollowupS stays on the same rule.
+	ListenURL     string `json:"listen_url,omitempty"`
+	ListenSlackMS int    `json:"listen_slack_ms,omitempty"`
+	FollowupS     int    `json:"followup_s,omitempty"`
 
 	// Synth returns an audio URL reachable by the speaker. Set by main from
 	// Endpoint; tests may replace it.
-	Synth func(ctx context.Context, text string) (string, error) `json:"-"`
+	Synth func(ctx context.Context, text string) (SynthResult, error) `json:"-"`
+	// Listen opens the speaker's microphone. Set by main from ListenURL.
+	Listen func(ctx context.Context) error `json:"-"`
+}
+
+// SynthResult is the playable answer and its length.
+type SynthResult struct {
+	URL      string
+	Duration time.Duration
 }
 
 func DefaultLocalVoice() LocalVoice { return LocalVoice{TimeoutMS: 6000} }
@@ -54,6 +69,15 @@ func (v LocalVoice) Validate() error {
 	if v.TimeoutMS < 500 || v.TimeoutMS > 20000 {
 		return errors.New("local_voice.timeout_ms must be between 500 and 20000")
 	}
+	if v.ListenURL != "" {
+		u, err := url.Parse(v.ListenURL)
+		if err != nil || u.Scheme != "http" || u.Hostname() == "" {
+			return errors.New("local_voice.listen_url must be an http URL")
+		}
+	}
+	if v.ListenSlackMS < 0 || v.ListenSlackMS > 5000 || v.FollowupS < 0 || v.FollowupS > 120 {
+		return errors.New("local_voice.listen_slack_ms must be 0..5000 and followup_s 0..120")
+	}
 	return nil
 }
 
@@ -70,16 +94,16 @@ func SpeakableText(s string) string {
 }
 
 // HTTPSynth posts {"text"} to endpoint and expects {"url"} back.
-func HTTPSynth(endpoint, apiKey string, timeout time.Duration) func(context.Context, string) (string, error) {
+func HTTPSynth(endpoint, apiKey string, timeout time.Duration) func(context.Context, string) (SynthResult, error) {
 	client := &http.Client{Timeout: timeout}
-	return func(ctx context.Context, text string) (string, error) {
+	return func(ctx context.Context, text string) (SynthResult, error) {
 		body, err := json.Marshal(map[string]string{"text": text})
 		if err != nil {
-			return "", err
+			return SynthResult{}, err
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
-			return "", err
+			return SynthResult{}, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		if apiKey != "" {
@@ -87,27 +111,28 @@ func HTTPSynth(endpoint, apiKey string, timeout time.Duration) func(context.Cont
 		}
 		resp, err := client.Do(req)
 		if err != nil {
-			return "", errors.New("local voice transport failed")
+			return SynthResult{}, errors.New("local voice transport failed")
 		}
 		defer resp.Body.Close()
 		data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 		if err != nil {
-			return "", err
+			return SynthResult{}, err
 		}
 		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("local voice HTTP %d", resp.StatusCode)
+			return SynthResult{}, fmt.Errorf("local voice HTTP %d", resp.StatusCode)
 		}
 		var out struct {
-			URL string `json:"url"`
+			URL        string `json:"url"`
+			DurationMS int    `json:"duration_ms"`
 		}
 		if json.Unmarshal(data, &out) != nil || out.URL == "" {
-			return "", errors.New("local voice: no url in response")
+			return SynthResult{}, errors.New("local voice: no url in response")
 		}
 		u, err := url.Parse(out.URL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-			return "", errors.New("local voice: invalid url")
+			return SynthResult{}, errors.New("local voice: invalid url")
 		}
-		return out.URL, nil
+		return SynthResult{URL: out.URL, Duration: time.Duration(out.DurationMS) * time.Millisecond}, nil
 	}
 }
 
@@ -125,16 +150,96 @@ func (n *Native) speakLocal(p *nativeRequest, rule, answer string) {
 	ctx, cancel := context.WithTimeout(p.ctx, timeout)
 	defer cancel()
 	started := time.Now()
-	u, err := n.LocalVoice.Synth(ctx, text)
+	res, err := n.LocalVoice.Synth(ctx, text)
 	if err == nil {
-		err = n.queueSound(p.ctx, p, soundURLRequest(u))
+		err = n.queueSound(p.ctx, p, soundURLRequest(res.URL))
 	}
 	ms := time.Since(started).Milliseconds()
 	if err != nil {
 		slog.Warn("native_local_voice", "request", requestTag(p.id), "rule", rule, "ok", false, "ms", ms, "fallback", "yandex_tts", "error", err.Error())
 		return
 	}
-	slog.Info("native_local_voice", "request", requestTag(p.id), "rule", rule, "ok", true, "ms", ms, "chars", len([]rune(text)))
+	slog.Info("native_local_voice", "request", requestTag(p.id), "rule", rule, "ok", true, "ms", ms, "chars", len([]rune(text)), "audio_ms", res.Duration.Milliseconds())
+	if n.LocalVoice.Listen != nil && res.Duration > 0 && reply.ListeningAllowed(p.ctx) {
+		n.scheduleLocalListen(p.id, rule, res.Duration)
+	}
+}
+
+// scheduleLocalListen opens the microphone once the MP3 has played. Any new
+// request from the speaker (e.g. «Алиса, стоп») cancels the pending listen.
+func (n *Native) scheduleLocalListen(id, rule string, audio time.Duration) {
+	slack := time.Duration(n.LocalVoice.ListenSlackMS) * time.Millisecond
+	if slack == 0 {
+		slack = 600 * time.Millisecond
+	}
+	follow := time.Duration(n.LocalVoice.FollowupS) * time.Second
+	if follow == 0 {
+		follow = 20 * time.Second
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.localListen != nil {
+		n.localListen.Stop()
+	}
+	var t *time.Timer
+	t = time.AfterFunc(audio+slack, func() {
+		n.mu.Lock()
+		if n.localListen != t {
+			n.mu.Unlock()
+			return
+		}
+		n.localListen = nil
+		n.localFollowRule, n.localFollowUntil = rule, time.Now().Add(follow)
+		n.mu.Unlock()
+		ctx, cancel := context.WithTimeout(n.ctx, 3*time.Second)
+		defer cancel()
+		err := n.LocalVoice.Listen(ctx)
+		if err != nil {
+			n.mu.Lock()
+			n.localFollowRule = ""
+			n.mu.Unlock()
+			slog.Warn("native_local_voice_listen", "request", requestTag(id), "ok", false, "error", err.Error())
+			return
+		}
+		slog.Info("native_local_voice_listen", "request", requestTag(id), "ok", true, "rule", rule)
+	})
+	n.localListen = t
+}
+
+// takeLocalFollow is called under n.mu for every new request: it cancels a
+// pending listen and returns the rule for a voice follow-up opened by us.
+func (n *Native) takeLocalFollow(voice, tagged bool) string {
+	if n.localListen != nil {
+		n.localListen.Stop()
+		n.localListen = nil
+	}
+	rule := n.localFollowRule
+	n.localFollowRule = ""
+	if !voice || tagged || rule == "" || time.Now().After(n.localFollowUntil) {
+		return ""
+	}
+	return rule
+}
+
+// HTTPListen posts to station-wakeword's /api/listen.
+func HTTPListen(listenURL string) func(context.Context) error {
+	client := &http.Client{Timeout: 3 * time.Second}
+	return func(ctx context.Context) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, listenURL, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return errors.New("listen transport failed")
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("listen HTTP %d", resp.StatusCode)
+		}
+		return nil
+	}
 }
 
 func soundURLRequest(u string) sound.Request { return sound.Request{URL: u, Title: "Ответ"} }

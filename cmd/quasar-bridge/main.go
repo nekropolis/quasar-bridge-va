@@ -349,6 +349,9 @@ func main() {
 		if cfg.LocalVoice.Enabled {
 			lv := cfg.LocalVoice
 			lv.Synth = bridge.HTTPSynth(lv.Endpoint, os.Getenv("QUASAR_LLM_API_KEY"), time.Duration(lv.TimeoutMS)*time.Millisecond)
+			if lv.ListenURL != "" {
+				lv.Listen = bridge.HTTPListen(lv.ListenURL)
+			}
 			localVoice = &lv
 			slog.Info("local_voice", "enabled", true, "rules", len(lv.Rules))
 		}
