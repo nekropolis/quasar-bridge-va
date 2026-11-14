@@ -139,7 +139,9 @@ type Native struct {
 	// the upstream refusal-only fallback.
 	CloudFallback *CloudFallback
 	// Ellipsis skips named keyword rules for a short «а …» just after an answer.
-	Ellipsis   *EllipsisFollowup
+	Ellipsis *EllipsisFollowup
+	// LocalVoice speaks answers of selected rules with our TTS (patch 0003).
+	LocalVoice *LocalVoice
 	lastAnswer time.Time
 	// Events records route, cloud and follow-up outcomes. Nil disables it.
 	Events *EventSink
@@ -734,6 +736,9 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 					stop = n.progress(p)
 				}
 				result, err = routed.ResolveDecision(p.ctx, text, decision)
+				if err == nil && result.Route == "llm" && n.LocalVoice.Applies(decision.Rule) {
+					n.speakLocal(p, decision.Rule, cmp.Or(result.speech, result.Answer))
+				}
 				stop()
 			} else {
 				result, err = n.resolver.Resolve(p.ctx, text)

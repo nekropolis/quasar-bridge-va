@@ -59,6 +59,7 @@ type config struct {
 	FollowupReprompt   bridge.FollowupReprompt `json:"followup_reprompt"`
 	CloudFallback      bridge.CloudFallback    `json:"cloud_fallback"`
 	EllipsisFollowup   bridge.EllipsisFollowup `json:"ellipsis_followup"`
+	LocalVoice         bridge.LocalVoice       `json:"local_voice"`
 	VAEvents           bool                    `json:"va_events"`
 	Routing            bridge.RoutingConfig    `json:"routing"`
 }
@@ -78,7 +79,7 @@ func readConfigForCommand(path string, modelOptional bool) (config, error) {
 }
 
 func parseConfig(raw []byte, modelOptional bool) (config, error) {
-	cfg := config{Diagnostics: diagnosticsConfig{Port: 2704}, DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true, FollowupFilter: bridge.DefaultFollowupFilter(), FollowupReprompt: bridge.DefaultFollowupReprompt(), CloudFallback: bridge.DefaultCloudFallback(), EllipsisFollowup: bridge.DefaultEllipsisFollowup()}
+	cfg := config{Diagnostics: diagnosticsConfig{Port: 2704}, DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), LLMTTSMarkup: true, FollowupFilter: bridge.DefaultFollowupFilter(), FollowupReprompt: bridge.DefaultFollowupReprompt(), CloudFallback: bridge.DefaultCloudFallback(), EllipsisFollowup: bridge.DefaultEllipsisFollowup(), LocalVoice: bridge.DefaultLocalVoice()}
 	// Omitted keys stay closed. Explicit true/false in the file still wins.
 	cfg.AssistantTools.Updates = false
 	cfg.AssistantTools.Configuration = false
@@ -238,6 +239,9 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
 		if cfg.EllipsisFollowup.MaxWords < 2 || cfg.EllipsisFollowup.MaxWords > 10 {
 			return cfg, errors.New("ellipsis_followup.max_words must be between 2 and 10")
 		}
+	}
+	if err := cfg.LocalVoice.Validate(); err != nil {
+		return cfg, err
 	}
 	if err := cfg.DialogueContext.Validate(); err != nil {
 		return cfg, err
