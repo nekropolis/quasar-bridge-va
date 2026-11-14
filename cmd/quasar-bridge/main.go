@@ -345,6 +345,13 @@ func main() {
 		if cfg.VAEvents && cfg.LLMBaseURL != "" {
 			vaEvents = &bridge.EventSink{URL: strings.TrimRight(cfg.LLMBaseURL, "/") + "/va/event", APIKey: os.Getenv("QUASAR_LLM_API_KEY"), Model: cfg.LLMModel}
 		}
+		var localVoice *bridge.LocalVoice
+		if cfg.LocalVoice.Enabled {
+			lv := cfg.LocalVoice
+			lv.Synth = bridge.HTTPSynth(lv.Endpoint, os.Getenv("QUASAR_LLM_API_KEY"), time.Duration(lv.TimeoutMS)*time.Millisecond)
+			localVoice = &lv
+			slog.Info("local_voice", "enabled", true, "rules", len(lv.Rules))
+		}
 		proxy.NewSession = func(ctx context.Context, up, down bridge.Sender) bridge.Session {
 			n := bridge.NewNative(ctx, up, down, engine)
 			n.GateText = false
@@ -357,6 +364,7 @@ func main() {
 			n.CloudFallback = &fallback
 			ellipsis := cfg.EllipsisFollowup
 			n.Ellipsis = &ellipsis
+			n.LocalVoice = localVoice
 			n.Events = vaEvents
 			if cfg.LocalProgress.Enabled {
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond
