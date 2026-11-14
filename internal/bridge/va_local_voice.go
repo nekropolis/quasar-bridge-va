@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"quasarbridge/internal/reply"
 	"quasarbridge/internal/sound"
 )
 
@@ -160,7 +159,9 @@ func (n *Native) speakLocal(p *nativeRequest, rule, answer string) {
 		return
 	}
 	slog.Info("native_local_voice", "request", requestTag(p.id), "rule", rule, "ok", true, "ms", ms, "chars", len([]rune(text)), "audio_ms", res.Duration.Milliseconds())
-	if n.LocalVoice.Listen != nil && res.Duration > 0 && reply.ListeningAllowed(p.ctx) {
+	// t501: a full dialogue — listen after every local-voice answer; exit words,
+	// silence or Alice commands end it (closeFollowUp / explicit rules).
+	if n.LocalVoice.Listen != nil && res.Duration > 0 {
 		n.scheduleLocalListen(p.id, rule, res.Duration)
 	}
 }
@@ -190,6 +191,8 @@ func (n *Native) scheduleLocalListen(id, rule string, audio time.Duration) {
 		}
 		n.localListen = nil
 		n.localFollowRule, n.localFollowUntil = rule, time.Now().Add(follow)
+		n.listenArmed = time.Now() // our opened mic is a follow-up: silence/stop/filler close it
+		n.lastAsked = false
 		n.mu.Unlock()
 		ctx, cancel := context.WithTimeout(n.ctx, 3*time.Second)
 		defer cancel()
@@ -243,3 +246,9 @@ func HTTPListen(listenURL string) func(context.Context) error {
 }
 
 func soundURLRequest(u string) sound.Request { return sound.Request{URL: u, Title: "Ответ"} }
+
+// vaLocalExitRE ends a local-voice dialogue: the whole utterance is a short
+// farewell («стоп», «спасибо, всё», «конец связи»), never a word inside a question.
+var vaLocalExitRE = regexp.MustCompile(`(?i)^\s*(?:алиса[,.\s]+)?(?:(?:ну|ладно|хорошо|окей|ок|вс[её]|ага)[,.\s]+)?(?:стоп|хватит|ясно|понятно|спасибо(?:\s+большое)?|вс[её]|достаточно|отбой|пока|конец\s+связи|выход|вс[её]\s+(?:понятно|ясно)|на\s+этом\s+вс[её])(?:[,.\s]+(?:спасибо|пока|алиса|пожалуйста|вс[её]|хватит|стоп|отбой))?[\s.!?,]*$`)
+
+func vaIsLocalExit(text string) bool { return vaLocalExitRE.MatchString(text) }

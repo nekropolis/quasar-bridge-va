@@ -142,7 +142,8 @@ func (n *Native) closeFollowUp(p *nativeRequest, text string) bool {
 		return true
 	}
 	filler := p.followUp && p.gated && !p.prevAsked && strings.TrimSpace(text) != "" && !vaIsStop(text) && n.Filler.IsFiller(text)
-	if !(p.followUp && p.gated && (strings.TrimSpace(text) == "" || vaIsStop(text) || filler)) {
+	exit := p.localFollowRule != "" && vaIsLocalExit(text) // t501: end of the eugene dialogue
+	if !(p.followUp && p.gated && (strings.TrimSpace(text) == "" || vaIsStop(text) || filler || exit)) {
 		n.mu.Unlock()
 		return false
 	}

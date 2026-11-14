@@ -175,13 +175,33 @@ func TestNativeLocalVoiceListensAfterAudioAndKeepsRule(t *testing.T) {
 	say("f1", "какая погода") // default route yandex → kept on dark_side_to_llm
 	want("f1", "llm")
 	waitListen() // answers of the follow-up keep the conversation open
-	say("f2", "поставь таймер") // explicit non-llm rule wins
-	want("f2", "yandex")
-	say("f3", "какая погода") // follow-up consumed once
+	say("f2", "а где стоп-кран в поезде") // «стоп» inside a question keeps the dialogue
+	want("f2", "llm")
+	waitListen()
+	say("f3", "поставь таймер") // explicit non-llm rule wins, no listen after it
 	want("f3", "yandex")
+	say("f4", "какая погода") // follow-up consumed once
+	want("f4", "yandex")
 	mu.Lock()
-	if synths != 2 {
-		t.Fatalf("synths=%d, want 2", synths)
+	if synths != 3 {
+		t.Fatalf("synths=%d, want 3", synths)
+	}
+	mu.Unlock()
+	// a new session that ends with an exit word: silent, no synth, no listen
+	say("g2", "переходи на тёмную сторону")
+	want("g2", "llm")
+	waitListen()
+	say("x1", "спасибо, всё")
+	select {
+	case got := <-decisions:
+		t.Fatalf("exit word routed: %v", got)
+	case <-listened:
+		t.Fatal("microphone reopened after exit word")
+	case <-time.After(300 * time.Millisecond):
+	}
+	mu.Lock()
+	if synths != 4 {
+		t.Fatalf("synths=%d, want 4", synths)
 	}
 	mu.Unlock()
 }

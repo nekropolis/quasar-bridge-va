@@ -82,3 +82,16 @@ func TestSoundURLDirective(t *testing.T) {
 		t.Fatalf("d=%v err=%v", d, err)
 	}
 }
+
+func TestLocalExitPhrases(t *testing.T) {
+	for _, s := range []string{"стоп", "Хватит.", "ясно", "понятно", "спасибо", "спасибо большое", "всё", "все", "достаточно", "отбой", "пока", "конец связи", "выход", "Алиса, стоп", "ну всё, спасибо", "ладно, пока", "всё понятно", "на этом всё"} {
+		if !vaIsLocalExit(s) {
+			t.Errorf("%q must end the dialogue", s)
+		}
+	}
+	for _, s := range []string{"а где стоп-кран в поезде", "почему стоп сигнал красный", "спасибо, а какая погода завтра", "всё равно включи свет", "расскажи всё про марс", "пока я сплю что делать"} {
+		if vaIsLocalExit(s) {
+			t.Errorf("%q must keep the dialogue", s)
+		}
+	}
+}
