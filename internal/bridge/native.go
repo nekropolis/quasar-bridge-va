@@ -149,6 +149,8 @@ type Native struct {
 	localListen      *time.Timer
 	localFollowRule  string
 	localFollowUntil time.Time
+	localListenFired time.Time
+	lastRequestAt    time.Time
 	lastAnswer       time.Time
 	// Events records route, cloud and follow-up outcomes. Nil disables it.
 	Events *EventSink
