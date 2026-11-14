@@ -1,0 +1,2129 @@
+diff --git a/cmd/quasar-bridge/config.go b/cmd/quasar-bridge/config.go
+index a99c842..e170caf 100644
+--- a/cmd/quasar-bridge/config.go
++++ b/cmd/quasar-bridge/config.go
+@@ -25,29 +25,34 @@ type progressConfig struct {
+ }
+ 
+ type config struct {
+-	AirPlay            airPlayConfig        `json:"airplay"`
+-	DialogueContext    dialogue.Config      `json:"dialogue_context"`
+-	LocalProgress      progressConfig       `json:"local_progress"`
+-	AssistantTools     assistant.Config     `json:"assistant_tools"`
+-	ConversationLog    journal.Config       `json:"conversation_log"`
+-	Listen             string               `json:"listen"`
+-	Upstream           string               `json:"upstream"`
+-	TLSCert            string               `json:"tls_cert"`
+-	TLSKey             string               `json:"tls_key"`
+-	AllowedIPs         []string             `json:"allowed_ips"`
+-	Mode               string               `json:"mode"`
+-	LLMBaseURL         string               `json:"llm_base_url"`
+-	LLMModel           string               `json:"llm_model"`
+-	LLMAPI             string               `json:"llm_api"`
+-	LLMChatGPTAuthFile string               `json:"llm_chatgpt_auth_file"`
+-	LLMReasoningEffort string               `json:"llm_reasoning_effort"`
+-	LLMMaxOutputTokens int                  `json:"llm_max_output_tokens"`
+-	LLMHostedTools     []string             `json:"llm_hosted_tools"`
+-	LLMChatParameters  map[string]any       `json:"llm_chat_parameters"`
+-	LLMStripPrefixes   []string             `json:"llm_strip_prefixes"`
+-	HomeWarmArea       string               `json:"home_warm_area"`
+-	ListenAfterReply   bool                 `json:"listen_after_reply"`
+-	Routing            bridge.RoutingConfig `json:"routing"`
++	AirPlay            airPlayConfig           `json:"airplay"`
++	DialogueContext    dialogue.Config         `json:"dialogue_context"`
++	LocalProgress      progressConfig          `json:"local_progress"`
++	AssistantTools     assistant.Config        `json:"assistant_tools"`
++	ConversationLog    journal.Config          `json:"conversation_log"`
++	Listen             string                  `json:"listen"`
++	Upstream           string                  `json:"upstream"`
++	TLSCert            string                  `json:"tls_cert"`
++	TLSKey             string                  `json:"tls_key"`
++	AllowedIPs         []string                `json:"allowed_ips"`
++	Mode               string                  `json:"mode"`
++	LLMBaseURL         string                  `json:"llm_base_url"`
++	LLMModel           string                  `json:"llm_model"`
++	LLMAPI             string                  `json:"llm_api"`
++	LLMChatGPTAuthFile string                  `json:"llm_chatgpt_auth_file"`
++	LLMReasoningEffort string                  `json:"llm_reasoning_effort"`
++	LLMMaxOutputTokens int                     `json:"llm_max_output_tokens"`
++	LLMHostedTools     []string                `json:"llm_hosted_tools"`
++	LLMChatParameters  map[string]any          `json:"llm_chat_parameters"`
++	LLMStripPrefixes   []string                `json:"llm_strip_prefixes"`
++	HomeWarmArea       string                  `json:"home_warm_area"`
++	ListenAfterReply   bool                    `json:"listen_after_reply"`
++	FollowupFilter     bridge.FollowupFilter   `json:"followup_filter"`
++	FollowupReprompt   bridge.FollowupReprompt `json:"followup_reprompt"`
++	CloudFallback      bridge.CloudFallback    `json:"cloud_fallback"`
++	EllipsisFollowup   bridge.EllipsisFollowup `json:"ellipsis_followup"`
++	VAEvents           bool                    `json:"va_events"`
++	Routing            bridge.RoutingConfig    `json:"routing"`
+ }
+ 
+ func readConfig(path string) (config, error) {
+@@ -65,7 +70,7 @@ func readConfigForCommand(path string, modelOptional bool) (config, error) {
+ }
+ 
+ func parseConfig(raw []byte, modelOptional bool) (config, error) {
+-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes()}
++	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, LLMStripPrefixes: bridge.DefaultStripPrefixes(), FollowupFilter: bridge.DefaultFollowupFilter(), FollowupReprompt: bridge.DefaultFollowupReprompt(), CloudFallback: bridge.DefaultCloudFallback(), EllipsisFollowup: bridge.DefaultEllipsisFollowup()}
+ 	if json.Unmarshal(raw, &cfg, json.RejectUnknownMembers(true)) != nil {
+ 		return cfg, errors.New("invalid configuration JSON")
+ 	}
+@@ -201,6 +206,23 @@ func parseConfig(raw []byte, modelOptional bool) (config, error) {
+ 	if cfg.LocalProgress.AfterMS < 100 || cfg.LocalProgress.AfterMS > 10000 || cfg.LocalProgress.IntervalMS < 1000 || cfg.LocalProgress.IntervalMS > 10000 {
+ 		return cfg, errors.New("invalid local_progress timing")
+ 	}
++	if cfg.FollowupReprompt.MinMatched < 1 || cfg.FollowupReprompt.MinMatched > 100 {
++		return cfg, errors.New("followup_reprompt.min_matched must be between 1 and 100")
++	}
++	if cfg.FollowupReprompt.Enabled && strings.TrimSpace(cfg.FollowupReprompt.Text) == "" {
++		return cfg, errors.New("followup_reprompt.text is required")
++	}
++	if cfg.CloudFallback.TimeoutMS < 0 || cfg.CloudFallback.TimeoutMS > 30000 {
++		return cfg, errors.New("cloud_fallback.timeout_ms must be between 0 and 30000")
++	}
++	if cfg.EllipsisFollowup.Enabled {
++		if cfg.EllipsisFollowup.WindowS < 1 || cfg.EllipsisFollowup.WindowS > 120 {
++			return cfg, errors.New("ellipsis_followup.window_s must be between 1 and 120")
++		}
++		if cfg.EllipsisFollowup.MaxWords < 2 || cfg.EllipsisFollowup.MaxWords > 10 {
++			return cfg, errors.New("ellipsis_followup.max_words must be between 2 and 10")
++		}
++	}
+ 	if err := cfg.DialogueContext.Validate(); err != nil {
+ 		return cfg, err
+ 	}
+diff --git a/cmd/quasar-bridge/config_test.go b/cmd/quasar-bridge/config_test.go
+index c243f0e..a29b93c 100644
+--- a/cmd/quasar-bridge/config_test.go
++++ b/cmd/quasar-bridge/config_test.go
+@@ -253,3 +253,35 @@ func TestMCPExampleAndUnknownConfiguration(t *testing.T) {
+ 		t.Fatal("unknown MCP option accepted")
+ 	}
+ }
++
++func TestVARepromptCloudFallbackConfig(t *testing.T) {
++	cfg, err := readConfig(configFile(t, `{"mode":"observe"}`))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !cfg.FollowupReprompt.Enabled || cfg.FollowupReprompt.MinMatched != 3 || cfg.FollowupReprompt.Text == "" {
++		t.Fatal("wrong reprompt defaults")
++	}
++	if !cfg.CloudFallback.Enabled || cfg.CloudFallback.TimeoutMS != 7000 || cfg.CloudFallback.Filler == "" || cfg.VAEvents {
++		t.Fatal("wrong cloud fallback defaults")
++	}
++	if !cfg.FollowupFilter.Enabled || !cfg.EllipsisFollowup.Enabled || cfg.EllipsisFollowup.WindowS != 15 {
++		t.Fatal("wrong follow-up defaults")
++	}
++	cfg, err = readConfig(configFile(t, `{"mode":"observe","va_events":true,"followup_reprompt":{"enabled":false,"min_matched":4,"text":"x"},"cloud_fallback":{"enabled":false,"timeout_ms":0},"followup_filter":{"enabled":false},"ellipsis_followup":{"enabled":false}}`))
++	if err != nil || !cfg.VAEvents || cfg.FollowupReprompt.Enabled || cfg.FollowupReprompt.MinMatched != 4 || cfg.CloudFallback.Enabled || cfg.CloudFallback.TimeoutMS != 0 || len(cfg.CloudFallback.Sources) == 0 || cfg.FollowupFilter.Enabled || cfg.EllipsisFollowup.Enabled {
++		t.Fatalf("overlay failed: %+v %v", cfg, err)
++	}
++	for _, bad := range []string{
++		`{"mode":"observe","followup_reprompt":{"min_matched":0}}`,
++		`{"mode":"observe","followup_reprompt":{"text":" "}}`,
++		`{"mode":"observe","cloud_fallback":{"timeout_ms":40000}}`,
++		`{"mode":"observe","cloud_fallback":{"bogus":1}}`,
++		`{"mode":"observe","ellipsis_followup":{"window_s":0}}`,
++		`{"mode":"observe","ellipsis_followup":{"max_words":1}}`,
++	} {
++		if _, err := readConfig(configFile(t, bad)); err == nil {
++			t.Fatalf("accepted %s", bad)
++		}
++	}
++}
+diff --git a/cmd/quasar-bridge/config_tools.go b/cmd/quasar-bridge/config_tools.go
+index 0497b13..6c8c270 100644
+--- a/cmd/quasar-bridge/config_tools.go
++++ b/cmd/quasar-bridge/config_tools.go
+@@ -59,6 +59,7 @@ var voiceSettings = []voiceSetting{
+ 	{"routing.refusal.enabled", "Логическое: передавать запрос LLM после отказа Алисы.", "", false},
+ 	{"routing.refusal.prefixes", "Массив префиксов отказа; при включённом детекторе непустой.", "", false},
+ 	{"routing.refusal.contains_any", "Массив фраз отказа; при включённом детекторе непустой.", "", false},
++	{"routing.refusal.contains_alone", "Массив фраз отказа, которые срабатывают в любом месте ответа без префикса. Пустой массив отключает только этот список.", "", false},
+ 	{"assistant_tools.web", "Логическое: чтение веб-страниц.", "", true},
+ 	{"assistant_tools.history", "Логическое: поиск в журнале диалогов.", "", true},
+ 	{"assistant_tools.time", "Логическое: инструмент текущего времени.", "", true},
+diff --git a/cmd/quasar-bridge/main.go b/cmd/quasar-bridge/main.go
+index 274ad67..6f03757 100644
+--- a/cmd/quasar-bridge/main.go
++++ b/cmd/quasar-bridge/main.go
+@@ -327,10 +327,23 @@ func main() {
+ 			}()
+ 		}
+ 
++		var vaEvents *bridge.EventSink
++		if cfg.VAEvents && cfg.LLMBaseURL != "" {
++			vaEvents = &bridge.EventSink{URL: strings.TrimRight(cfg.LLMBaseURL, "/") + "/va/event", APIKey: os.Getenv("QUASAR_LLM_API_KEY"), Model: cfg.LLMModel}
++		}
+ 		proxy.NewSession = func(ctx context.Context, up, down bridge.Sender) bridge.Session {
+ 			n := bridge.NewNative(ctx, up, down, engine)
+ 			n.GateText = false
+ 			n.ShouldListen = cfg.ListenAfterReply
++			filter := cfg.FollowupFilter
++			n.Filler = &filter
++			reprompt := cfg.FollowupReprompt
++			n.Reprompt = &reprompt
++			fallback := cfg.CloudFallback
++			n.CloudFallback = &fallback
++			ellipsis := cfg.EllipsisFollowup
++			n.Ellipsis = &ellipsis
++			n.Events = vaEvents
+ 			if cfg.LocalProgress.Enabled {
+ 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond
+ 				n.ProgressInterval = time.Duration(cfg.LocalProgress.IntervalMS) * time.Millisecond
+diff --git a/internal/bridge/engine.go b/internal/bridge/engine.go
+index a483ccf..30b7897 100644
+--- a/internal/bridge/engine.go
++++ b/internal/bridge/engine.go
+@@ -4,8 +4,10 @@ import (
+ 	"context"
+ 	"encoding/json/v2"
+ 	"errors"
++	"log/slog"
+ 	"quasarbridge/internal/configvoice"
+ 	"quasarbridge/internal/dialogue"
++	"slices"
+ 	"strings"
+ 	"sync"
+ 	"sync/atomic"
+@@ -284,7 +286,13 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
+ 	if e.Playback != nil && playback.Command(text) != "" && e.Playback.Active(ctx) {
+ 		return RouteDecision{Route: "playback", Source: "playback"}
+ 	}
+-	if d, ok := p.match(text); ok {
++	skip := skipRulesFrom(ctx)
++	if len(skip) > 0 {
++		if d, ok := p.match(text); ok && slices.Contains(skip, d.Rule) {
++			slog.Info("routing_rule_skipped", "rule", d.Rule, "reason", "ellipsis_followup")
++		}
++	}
++	if d, ok := p.matchSkip(text, skip); ok {
+ 		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
+ 			d.Route = "music"
+ 		}
+diff --git a/internal/bridge/native.go b/internal/bridge/native.go
+index d26c9d7..97d9e77 100644
+--- a/internal/bridge/native.go
++++ b/internal/bridge/native.go
+@@ -7,6 +7,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"log/slog"
++	"regexp"
+ 	"strings"
+ 	"sync"
+ 	"time"
+@@ -46,6 +47,7 @@ type FallbackResolver interface {
+ }
+ 
+ type nativeRequest struct {
++	afterAnswer                     bool
+ 	streaming                       bool
+ 	listenOnStreamStart             bool
+ 	partial                         uint32
+@@ -76,7 +78,27 @@ type nativeRequest struct {
+ 	soundDirective                  *soundDirective
+ 	soundSealed                     bool
+ 	expires                         *time.Timer
++	followUp                        bool
++	silent                          bool
++	played                          bool
++	prevAsked                       bool
++	source                          string
++	matched                         int
++	partials                        int
++	partialText                     bool
++	cloudAnswered                   bool
++	cloudStreaming                  bool
++	cloudBytes                      int
++	cloudLogged                     bool
++	cloudTimer                      *time.Timer
++	progressSpeech                  string
+ }
++
++// Short stop words inside the post-reply listen window close it quietly.
++var vaStopRE = regexp.MustCompile(`(?i)^\s*(?:алиса[,\s]+)?(?:стоп|хватит|замолчи|помолчи|отмена|отмени|тихо|достаточно)(?:\s+(?:алиса|пожалуйста))?[\s.!?,]*$`)
++
++func vaIsStop(text string) bool { return vaStopRE.MatchString(text) }
++
+ type Native struct {
+ 	connectionScope  string
+ 	ctx              context.Context
+@@ -95,6 +117,23 @@ type Native struct {
+ 	DecisionDelay    time.Duration
+ 	ProgressAfter    time.Duration
+ 	ProgressInterval time.Duration
++	// listenArmed is set when a local reply asked the speaker to keep listening.
++	listenArmed time.Time
++	lastAsked   bool
++	// Filler drops acknowledgements in the follow-up window. Nil disables it.
++	Filler *FollowupFilter
++	// Reprompt asks once to repeat an empty follow-up that still had voice activity.
++	Reprompt     *FollowupReprompt
++	repromptUsed bool
++	lastVoice    *nativeRequest
++	// CloudFallback replaces an empty, refused or late cloud answer. Nil keeps
++	// the upstream refusal-only fallback.
++	CloudFallback *CloudFallback
++	// Ellipsis skips named keyword rules for a short «а …» just after an answer.
++	Ellipsis   *EllipsisFollowup
++	lastAnswer time.Time
++	// Events records route, cloud and follow-up outcomes. Nil disables it.
++	Events *EventSink
+ }
+ 
+ func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
+@@ -108,6 +147,9 @@ func (n *Native) Close() {
+ 		p.canceled = true
+ 		p.cancel()
+ 		p.expires.Stop()
++		if p.cloudTimer != nil {
++			p.cloudTimer.Stop()
++		}
+ 	}
+ 	n.mu.Unlock()
+ 	n.wg.Wait()
+@@ -131,8 +173,27 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
+ 		}
+ 		timestamps := stat.GetTimestamps()
+ 		reported := func(value string) bool { return value != "" && value != "0" }
++		n.mu.Lock()
++		if q := n.requests[stat.GetRequestMessageId()]; q != nil {
++			q.played = true
++		}
++		if reported(timestamps.GetOnSoundPlayerBeginTime()) || reported(timestamps.GetOnPlayerBegin()) || reported(timestamps.GetOnSoundPlayerEndTime()) || reported(timestamps.GetOnPlayerEnd()) {
++			n.lastAnswer = time.Now()
++		}
++		n.mu.Unlock()
+ 		slog.Info("native_playback_status", "request", requestTag(stat.GetRequestMessageId()), "error_class", kind, "playback_reported", reported(timestamps.GetOnSoundPlayerBeginTime()) || reported(timestamps.GetOnPlayerBegin()), "finished_reported", reported(timestamps.GetOnSoundPlayerEndTime()) || reported(timestamps.GetOnPlayerEnd()))
+ 	}
++	if e.GetMatchedUser() != nil {
++		n.mu.Lock()
++		q := n.requests[e.GetHeader().GetRefMessageId()]
++		if q == nil {
++			q = n.lastVoice
++		}
++		if q != nil && !q.final && !q.started {
++			q.matched++
++		}
++		n.mu.Unlock()
++	}
+ 	var req *request.TAliceRequestProto
+ 	switch f.Kind() {
+ 	case "TextInput":
+@@ -172,6 +233,14 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
+ 
+ 		slog.Info("native_request_shape", "request", requestTag(id), "text_bytes", len(p.text), "event_type", req.GetRequest().GetEvent().GetType().String(), "stream", e.GetHeader().GetStreamId(), "unknown_request_bytes", len(req.ProtoReflect().GetUnknown()), "payload_bytes", len(req.GetRequest().GetEvent().GetPayloadRaw()))
+ 		n.mu.Lock()
++		if !p.isText && n.Ellipsis.InWindow(n.lastAnswer, time.Now()) {
++			p.afterAnswer = true
++		}
++		if !p.isText && !n.listenArmed.IsZero() && time.Since(n.listenArmed) < 2*time.Minute {
++			p.followUp = true
++			p.prevAsked = n.lastAsked
++		}
++		n.listenArmed = time.Time{}
+ 		if n.requests[id] != nil {
+ 			n.mu.Unlock()
+ 			cancel()
+@@ -192,6 +261,12 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
+ 			defer n.mu.Unlock()
+ 			p.canceled = true
+ 			p.cancel()
++			if p.cloudTimer != nil {
++				p.cloudTimer.Stop()
++			}
++			if n.lastVoice == p {
++				n.lastVoice = nil
++			}
+ 			delete(n.requests, p.id)
+ 			delete(n.tts, p.ttsID)
+ 			delete(n.tts, p.progressTTS)
+@@ -206,8 +281,34 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
+ 				}
+ 			}
+ 		})
++		var vaStale []string
++		if !p.isText {
++			n.lastVoice = p
++			if !p.followUp {
++				n.repromptUsed = false
++			}
++			for _, q := range n.requests {
++				if q.canceled || q.played || q.cloud || q.silent || !q.local || q.soundRequest != nil || q.soundDirective != nil {
++					continue
++				}
++				q.canceled = true
++				q.cancel()
++				if q.cloudTimer != nil {
++					q.cloudTimer.Stop()
++				}
++				for _, ttsID := range []string{q.ttsID, q.progressTTS} {
++					if ttsID != "" {
++						vaStale = append(vaStale, ttsID)
++					}
++				}
++				slog.Info("native_va_interrupt", "request", requestTag(q.id), "by", requestTag(id))
++			}
++		}
+ 		n.requests[id] = p
+ 		n.mu.Unlock()
++		for _, ttsID := range vaStale {
++			_ = n.sendCancel(ctx, ttsID)
++		}
+ 		if p.gated {
+ 			gated, err := wire.EnableApproval(f)
+ 			if err != nil {
+@@ -247,6 +348,12 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
+ 		if p != nil {
+ 			p.canceled = true
+ 			p.cancel()
++			if p.cloudTimer != nil {
++				p.cloudTimer.Stop()
++			}
++			if n.lastVoice == p {
++				n.lastVoice = nil
++			}
+ 			ttsID = p.ttsID
+ 		}
+ 		n.mu.Unlock()
+@@ -413,7 +520,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
+ 				}
+ 				p.audioIsProgress = p.ttsID == p.progressTTS
+ 				p.audio.next()
+-				p.audio.source.discardAudio = p.audioIsProgress
++				p.audio.source.discardAudio = p.audioIsProgress && p.progressSpeech == ""
+ 				if p.audioStarted {
+ 					p.audioWaiting = false
+ 					n.mu.Unlock()
+@@ -432,6 +539,14 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
+ 		return n.down(ctx, k, out)
+ 	}
+ 
++	if f.Kind() == "TtsSpeak" || f.Kind() == "AliceResponse" || f.Kind() == "DeferredAliceResponse" {
++		if p.cloud && !p.cloudAnswered {
++			p.cloudAnswered = true
++			if p.cloudTimer != nil {
++				p.cloudTimer.Stop()
++			}
++		}
++	}
+ 	if f.Kind() == "TtsSpeak" {
+ 		p.ttsStarted = true
+ 		if p.local || p.canceled {
+@@ -447,39 +562,43 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
+ 		for _, card := range r.GetResponse().GetCards() {
+ 			text += card.GetText() + " "
+ 		}
++		voice := r.GetVoiceResponse().GetOutputSpeech().GetText()
+ 		if strings.TrimSpace(text) == "" {
+-			text = r.GetVoiceResponse().GetOutputSpeech().GetText()
++			text = voice
++		}
++		// A card can hide a spoken non-answer, so the voice line is checked too.
++		refused := n.isRefusal(text) || (strings.TrimSpace(voice) != "" && voice != text && n.isRefusal(voice))
++		reason := ""
++		if refused && (n.CloudFallback == nil || n.CloudFallback.OnRefusal || !n.CloudFallback.Enabled) {
++			reason = "refusal"
++		} else if strings.TrimSpace(text) == "" && !r.GetResponse().GetIsStreaming() && len(r.GetResponse().GetDirectives()) == 0 && n.CloudFallback != nil && n.CloudFallback.OnEmpty && n.CloudFallback.allowed(p.text, p.source) {
++			reason = "empty"
++		}
++		if _, ok := n.resolver.(FallbackResolver); ok && reason != "" {
++			n.cloudFallbackUnlock(p, reason)
++			return nil
+ 		}
+-
+-		if resolver, ok := n.resolver.(FallbackResolver); ok && n.isRefusal(text) {
+-			p.local = true
+-			if n.OnRoute != nil {
+-				n.OnRoute(p.id, "llm")
+-			}
+-			p.ttsID = newID()
+-			n.tts[p.ttsID] = p
+-			query := p.text
+-			n.mu.Unlock()
+-			n.wg.Go(func() {
+-				result, err := resolver.Fallback(p.ctx, query)
+-				if p.ctx.Err() != nil {
+-					return
+-				}
+-				if errors.Is(err, context.Canceled) {
+-					n.discardStale(p)
+-					return
+-				}
+-				if err != nil {
+-					n.discardSound(p)
+-					result.Answer = "Сейчас не получилось получить ответ локальной модели."
+-				}
+-				_ = n.sendCancel(p.ctx, p.id)
+-				if err := n.reply(p, result.Answer); err != nil {
+-					slog.Warn("native_reply_failed", "request", requestTag(p.id))
++	}
++	if p.cloud && !p.cloudLogged {
++		if r := e.GetAliceResponse(); r != nil {
++			p.cloudBytes += len(cloudResponseText(r))
++			if r.GetResponse().GetIsStreaming() {
++				p.cloudStreaming = true
++			} else {
++				kind := "answer"
++				if !canReplaceResponse(r) {
++					kind = "directives"
++				} else if p.cloudBytes == 0 {
++					kind = "empty"
+ 				}
+-				slog.Info("native_fallback", "request", requestTag(p.id), "route", "llm")
+-			})
+-			return nil
++				n.emitCloudLocked(p, kind)
++			}
++		}
++		if d := e.GetDeferredAliceResponse(); d != nil && p.cloudStreaming {
++			p.cloudBytes += len(d.GetBaseResponse().GetText())
++			if d.GetIsLast() {
++				n.emitCloudLocked(p, "streamed")
++			}
+ 		}
+ 	}
+ 	emptyFinal := false
+@@ -494,6 +613,12 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
+ 		slog.Info("native_server_ready", "request", requestTag(p.id))
+ 	case "AsrResult":
+ 		asr := e.GetAsrResult()
++		if !asr.GetEndOfUtt() {
++			p.partials++
++			if len(asr.GetRecognition()) > 0 && (asr.GetRecognition()[0].GetNormalized() != "" || len(asr.GetRecognition()[0].GetWords()) > 0) {
++				p.partialText = true
++			}
++		}
+ 		if asr.GetEndOfUtt() {
+ 			p.final = true
+ 			slog.Info("native_asr_final", "request", requestTag(p.id), "hypotheses", len(asr.GetRecognition()), "code", asr.GetResponseCode().String())
+@@ -542,12 +667,27 @@ func (n *Native) maybeResolve(p *nativeRequest) {
+ 				return
+ 			}
+ 		}
++		if n.closeFollowUp(p, text) {
++			return
++		}
+ 		result := Resolution{Route: "yandex"}
+ 		var err error
+ 		if n.resolver != nil && strings.TrimSpace(text) != "" {
+ 			if routed, ok := n.resolver.(RoutedResolver); ok {
+-				decision := routed.Decide(p.ctx, text)
+ 				n.mu.Lock()
++				afterAnswer := p.afterAnswer
++				n.mu.Unlock()
++				dctx := p.ctx
++				if afterAnswer && n.Ellipsis.IsEllipsis(text) {
++					dctx = WithSkipRules(p.ctx, n.Ellipsis.SkipRules)
++					slog.Info("native_ellipsis_followup", "request", requestTag(p.id))
++				}
++				decision := routed.Decide(dctx, text)
++				n.mu.Lock()
++				p.source = decision.Source
++				if strings.TrimSpace(text) != "" {
++					n.repromptUsed = false
++				}
+ 				p.listenOnStreamStart = decision.Source == "dialogue_retry"
+ 				n.mu.Unlock()
+ 				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
+@@ -610,8 +750,21 @@ func (n *Native) maybeResolve(p *nativeRequest) {
+ 					err = n.up(p.ctx, websocket.MessageBinary, p.continuation)
+ 				}
+ 			}
++			if err == nil && n.CloudFallback != nil && n.CloudFallback.TimeoutMS > 0 && n.CloudFallback.allowed(text, p.source) {
++				if _, ok := n.resolver.(FallbackResolver); ok {
++					p.cloudTimer = time.AfterFunc(time.Duration(n.CloudFallback.TimeoutMS)*time.Millisecond, func() {
++						n.mu.Lock()
++						if p.cloudAnswered || p.ttsStarted || p.canceled || p.local || p.ctx.Err() != nil {
++							n.mu.Unlock()
++							return
++						}
++						n.cloudFallbackUnlock(p, "timeout")
++					})
++				}
++			}
++			matched, partials := p.matched, p.partials
+ 			n.mu.Unlock()
+-			slog.Info("native_route", "request", requestTag(p.id), "route", "yandex", "sent", err == nil)
++			slog.Info("native_route", "request", requestTag(p.id), "route", "yandex", "sent", err == nil, "matched", matched, "partials", partials)
+ 			return
+ 		}
+ 		p.local = true
+@@ -648,8 +801,14 @@ func (n *Native) reply(p *nativeRequest, text string) error {
+ 		requestID = p.id
+ 	}
+ 	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(text)}, HasVoiceResponse: true}, Response: &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}}}
+-	silentPlayback := n.hasSilentPlayback(p)
++	silentPlayback := n.hasSilentPlayback(p) || p.silent
+ 	answer.VoiceResponse.ShouldListen = n.ShouldListen && !silentPlayback && reply.ListeningAllowed(p.ctx)
++	if answer.VoiceResponse.ShouldListen {
++		n.mu.Lock()
++		n.lastAsked = strings.Contains(text, "?")
++		n.listenArmed = time.Now()
++		n.mu.Unlock()
++	}
+ 	if silentPlayback {
+ 		answer.VoiceResponse.HasVoiceResponse = false
+ 		answer.VoiceResponse.OutputSpeech.Text = new("")
+diff --git a/internal/bridge/progress.go b/internal/bridge/progress.go
+index c47fc21..7804426 100644
+--- a/internal/bridge/progress.go
++++ b/internal/bridge/progress.go
+@@ -3,6 +3,7 @@ package bridge
+ import (
+ 	"encoding/binary"
+ 	"log/slog"
++	"strings"
+ 	"time"
+ 
+ 	"github.com/coder/websocket"
+@@ -19,19 +20,23 @@ import (
+ 
+ // progress starts only after the executor is known. Stop joins the pump so no
+ // partial can race with the final answer or continue after cancellation.
+-func (n *Native) progress(p *nativeRequest) func() {
++func (n *Native) progress(p *nativeRequest) func() { return n.progressAfter(p, n.ProgressAfter) }
++
++func (n *Native) progressAfter(p *nativeRequest, after time.Duration) func() {
+ 	stop := make(chan struct{})
+ 	done := make(chan struct{})
+ 	n.wg.Go(func() {
+ 		defer close(done)
+-		timer := time.NewTimer(n.ProgressAfter)
+-		defer timer.Stop()
+-		select {
+-		case <-stop:
+-			return
+-		case <-p.ctx.Done():
+-			return
+-		case <-timer.C:
++		if after > 0 {
++			timer := time.NewTimer(after)
++			defer timer.Stop()
++			select {
++			case <-stop:
++				return
++			case <-p.ctx.Done():
++				return
++			case <-timer.C:
++			}
+ 		}
+ 		n.mu.Lock()
+ 		if p.canceled || p.ctx.Err() != nil {
+@@ -106,7 +111,11 @@ func (n *Native) beginDeferred(p *nativeRequest) error {
+ 	if err := n.deferredPart(p, "", false); err != nil {
+ 		return err
+ 	}
+-	// Obtain the provider's actual Opus headers; its speech payload is discarded.
++	// Obtain the provider's actual Opus headers. The speech payload is discarded
++	// unless this segment is a spoken cloud-fallback filler.
++	if p.progressSpeech != "" {
++		return n.synthesize(p, p.progressSpeech)
++	}
+ 	return n.synthesize(p, "а")
+ }
+ func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
+@@ -119,6 +128,12 @@ func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
+ 	if last {
+ 		silentPlayback := n.hasSilentPlayback(p)
+ 		base.ShouldListen = n.ShouldListen && !silentPlayback && reply.ListeningAllowed(p.ctx)
++		if base.ShouldListen {
++			n.mu.Lock()
++			n.lastAsked = strings.Contains(text, "?")
++			n.listenArmed = time.Now()
++			n.mu.Unlock()
++		}
+ 		if silentPlayback {
+ 			voice = ""
+ 		}
+diff --git a/internal/bridge/routing.go b/internal/bridge/routing.go
+index c09a3dc..d68f1cb 100644
+--- a/internal/bridge/routing.go
++++ b/internal/bridge/routing.go
+@@ -8,6 +8,7 @@ import (
+ 	"quasarbridge/internal/dialogue"
+ 	"quasarbridge/internal/update"
+ 	"regexp"
++	"slices"
+ 	"strings"
+ )
+ 
+@@ -41,6 +42,8 @@ type RefusalConfig struct {
+ 	Enabled     bool     `json:"enabled"`
+ 	Prefixes    []string `json:"prefixes"`
+ 	ContainsAny []string `json:"contains_any"`
++	// Phrases that mark a refusal anywhere in the answer, without a prefix.
++	ContainsAlone []string `json:"contains_alone,omitempty"`
+ }
+ type RouteDecision struct {
+ 	ticket   dialogue.Ticket
+@@ -65,6 +68,7 @@ type RoutingPolicy struct {
+ 	classifierEnabled               bool
+ 	refusalEnabled                  bool
+ 	refusalPrefixes, refusalPhrases []string
++	refusalAlone                    []string
+ 	revision                        string
+ }
+ 
+@@ -205,6 +209,12 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
+ 	if p.refusalPhrases, err = foldTerms(cfg.Refusal.ContainsAny, true); err != nil {
+ 		return nil, errors.New("invalid refusal contains_any")
+ 	}
++	if p.refusalAlone, err = foldTerms(cfg.Refusal.ContainsAlone, true); err != nil {
++		return nil, errors.New("invalid refusal contains_alone")
++	}
++	for i, term := range p.refusalAlone {
++		p.refusalAlone[i] = strings.ReplaceAll(term, "ё", "е")
++	}
+ 	if p.refusalEnabled && (len(p.refusalPrefixes) == 0 || len(p.refusalPhrases) == 0) {
+ 		return nil, errors.New("enabled refusal matcher requires prefixes and contains_any")
+ 	}
+@@ -217,8 +227,15 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
+ 	return p, nil
+ }
+ func (p *RoutingPolicy) match(text string) (RouteDecision, bool) {
++	return p.matchSkip(text, nil)
++}
++
++func (p *RoutingPolicy) matchSkip(text string, skip []string) (RouteDecision, bool) {
+ 	lower := strings.ToLower(text)
+ 	for _, r := range p.rules {
++		if slices.Contains(skip, r.name) {
++			continue
++		}
+ 		if len(r.any) > 0 && !containsOne(lower, r.any) {
+ 			continue
+ 		}
+@@ -274,6 +291,14 @@ func (p *RoutingPolicy) isRefusal(text string) bool {
+ 		return false
+ 	}
+ 	s := strings.Join(strings.Fields(strings.ToLower(text)), " ")
++	if len(p.refusalAlone) > 0 {
++		folded := strings.ReplaceAll(s, "ё", "е")
++		for _, term := range p.refusalAlone {
++			if strings.Contains(folded, term) {
++				return true
++			}
++		}
++	}
+ 	for _, prefix := range p.refusalPrefixes {
+ 		if strings.HasPrefix(s, prefix) {
+ 			return containsOne(s, p.refusalPhrases)
+diff --git a/internal/bridge/routing_test.go b/internal/bridge/routing_test.go
+index 0e06808..3d3723e 100644
+--- a/internal/bridge/routing_test.go
++++ b/internal/bridge/routing_test.go
+@@ -266,3 +266,30 @@ func TestBridgeUpdateRequestsNeverReachHomeClassifier(t *testing.T) {
+ 		}
+ 	}
+ }
++
++func TestRefusalContainsAlone(t *testing.T) {
++	cfg := DefaultRoutingConfig()
++	cfg.Refusal.ContainsAlone = []string{"так просто не объяснить", "отправила ссылку", "ссылку в приложение"}
++	e := &Engine{}
++	if err := e.SetRouting(cfg); err != nil {
++		t.Fatal(err)
++	}
++	for _, s := range []string{
++		"Хм, это так просто не объяснить. Могу отправить ссылку.",
++		"Вот что нашлось. Я отправила   ссылку в приложение Дом с Алисой.",
++		"Не могу ответить на это.",
++	} {
++		if !e.IsRefusal(s) {
++			t.Fatalf("refusal missed: %q", s)
++		}
++	}
++	for _, s := range []string{"Сорок один рубль шестьдесят четыре копейки.", "Ссылка — это адрес страницы."} {
++		if e.IsRefusal(s) {
++			t.Fatalf("false refusal: %q", s)
++		}
++	}
++	cfg.Refusal.ContainsAlone = []string{" "}
++	if err := e.SetRouting(cfg); err == nil {
++		t.Fatal("empty contains_alone term accepted")
++	}
++}
+diff --git a/internal/bridge/va_cloud.go b/internal/bridge/va_cloud.go
+new file mode 100644
+index 0000000..b5d032d
+--- /dev/null
++++ b/internal/bridge/va_cloud.go
+@@ -0,0 +1,259 @@
++package bridge
++
++import (
++	"bytes"
++	"context"
++	"encoding/json/v2"
++	"errors"
++	"log/slog"
++	"net/http"
++	"strings"
++	"sync/atomic"
++	"time"
++)
++
++// FollowupReprompt asks once to repeat when the follow-up window ends with an
++// empty transcript but the station still reported a matched voice.
++type FollowupReprompt struct {
++	Enabled    bool   `json:"enabled"`
++	MinMatched int    `json:"min_matched"`
++	Text       string `json:"text"`
++}
++
++func DefaultFollowupReprompt() FollowupReprompt {
++	return FollowupReprompt{Enabled: true, MinMatched: 3, Text: "Не расслышала, повтори."}
++}
++
++// CloudFallback answers locally when a cloud reply is empty, a refusal, or late.
++// Empty and timeout replacement is limited to the listed routing sources and
++// skips requests whose text contains an excluded fragment. A nil value keeps
++// the upstream refusal-only fallback, without a filler or a timeout.
++type CloudFallback struct {
++	Enabled         bool     `json:"enabled"`
++	Filler          string   `json:"filler"`
++	OnEmpty         bool     `json:"on_empty"`
++	OnRefusal       bool     `json:"on_refusal"`
++	TimeoutMS       int      `json:"timeout_ms"`
++	Sources         []string `json:"sources"`
++	ExcludeContains []string `json:"exclude_contains"`
++}
++
++func DefaultCloudFallback() CloudFallback {
++	return CloudFallback{Enabled: true, Filler: "Одну минуту.", OnEmpty: true, OnRefusal: true, TimeoutMS: 7000,
++		Sources: []string{"classifier", "classifier_error", "default", "dialogue"},
++		ExcludeContains: strings.Fields("таймер будильник напомни напоминан музык песн трек радио плейлист громк тише громче пауз " +
++			"стоп продолж следующ предыдущ включи выключи включить выключить поставь запусти открой закрой свет ламп телевизор канал " +
++			"кондиционер пылесос розетк штор отопл котел котёл")}
++}
++
++// allowed reports whether an empty or timed-out cloud answer may be replaced.
++func (c *CloudFallback) allowed(text, source string) bool {
++	if c == nil || !c.Enabled || len(strings.Fields(text)) == 0 {
++		return false
++	}
++	ok := false
++	for _, item := range c.Sources {
++		if item == source {
++			ok = true
++		}
++	}
++	if !ok {
++		return false
++	}
++	lower := strings.ReplaceAll(strings.ToLower(text), "ё", "е")
++	for _, item := range c.ExcludeContains {
++		item = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(item)), "ё", "е")
++		if item != "" && strings.Contains(lower, item) {
++			return false
++		}
++	}
++	return true
++}
++
++// EventSink posts route, cloud and follow-up records to the voice core.
++// Texts are not written to the bridge log.
++type EventSink struct {
++	URL      string
++	APIKey   string
++	Model    string
++	HTTP     *http.Client
++	inflight atomic.Int32
++}
++
++func (s *EventSink) Emit(fields map[string]any) {
++	if s == nil || s.URL == "" {
++		return
++	}
++	if s.inflight.Add(1) > 8 {
++		s.inflight.Add(-1)
++		return
++	}
++	fields["model"] = s.Model
++	go func() {
++		defer s.inflight.Add(-1)
++		body, err := json.Marshal(fields)
++		if err != nil {
++			return
++		}
++		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++		defer cancel()
++		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.URL, bytes.NewReader(body))
++		if err != nil {
++			return
++		}
++		req.Header.Set("Content-Type", "application/json")
++		if s.APIKey != "" {
++			req.Header.Set("Authorization", "Bearer "+s.APIKey)
++		}
++		client := s.HTTP
++		if client == nil {
++			client = http.DefaultClient
++		}
++		if resp, err := client.Do(req); err == nil {
++			_ = resp.Body.Close()
++		}
++	}()
++}
++
++func (n *Native) event(fields map[string]any) {
++	if n.Events != nil {
++		n.Events.Emit(fields)
++	}
++}
++
++// emitCloudLocked records one cloud-routed request. n.mu is held by the caller.
++func (n *Native) emitCloudLocked(p *nativeRequest, kind string) {
++	if p.cloudLogged {
++		return
++	}
++	p.cloudLogged = true
++	if n.Events == nil {
++		return
++	}
++	n.Events.Emit(map[string]any{"event": "cloud", "result": kind, "text": p.text, "source": p.source, "cloud_bytes": p.cloudBytes, "matched": p.matched, "follow_up": p.followUp})
++}
++
++// closeFollowUp handles silence, stop words and filler inside the listen window.
++// It returns true when the request was fully handled.
++func (n *Native) closeFollowUp(p *nativeRequest, text string) bool {
++	n.mu.Lock()
++	if p.canceled {
++		n.mu.Unlock()
++		return true
++	}
++	filler := p.followUp && p.gated && !p.prevAsked && strings.TrimSpace(text) != "" && !vaIsStop(text) && n.Filler.IsFiller(text)
++	if !(p.followUp && p.gated && (strings.TrimSpace(text) == "" || vaIsStop(text) || filler)) {
++		n.mu.Unlock()
++		return false
++	}
++	reason := "empty_follow_up"
++	if filler {
++		reason = "followup_filler"
++	} else if strings.TrimSpace(text) != "" {
++		reason = "stop_follow_up"
++	}
++	matched, partials, partialText := p.matched, p.partials, p.partialText
++	if reason == "empty_follow_up" && n.Reprompt != nil && n.Reprompt.Enabled && strings.TrimSpace(n.Reprompt.Text) != "" && !n.repromptUsed && matched >= n.Reprompt.MinMatched {
++		n.repromptUsed = true
++		p.local = true
++		p.route = "reprompt"
++		p.ttsID = newID()
++		n.tts[p.ttsID] = p
++		prompt := n.Reprompt.Text
++		n.mu.Unlock()
++		slog.Info("native_route", "request", requestTag(p.id), "route", "reprompt", "reason", reason, "matched", matched, "partials", partials, "partial_text", partialText)
++		n.event(map[string]any{"event": "followup", "result": "reprompt", "reason": reason, "matched": matched, "partials": partials, "partial_text": partialText})
++		if err := n.sendCancel(p.ctx, p.id); err != nil {
++			return true
++		}
++		if err := n.reply(p, prompt); err != nil {
++			slog.Warn("native_reply_failed", "request", requestTag(p.id))
++		}
++		n.mu.Lock()
++		n.lastAsked = true
++		n.mu.Unlock()
++		return true
++	}
++	p.local = true
++	p.silent = true
++	p.route = "silent"
++	n.mu.Unlock()
++	slog.Info("native_route", "request", requestTag(p.id), "route", "silent", "reason", reason, "matched", matched, "partials", partials, "partial_text", partialText)
++	ev := map[string]any{"event": "followup", "result": "silent", "reason": reason, "matched": matched, "partials": partials, "partial_text": partialText}
++	if reason != "empty_follow_up" {
++		ev["text"] = text
++	}
++	n.event(ev)
++	if err := n.sendCancel(p.ctx, p.id); err != nil {
++		return true
++	}
++	if err := n.reply(p, ""); err != nil {
++		slog.Warn("native_reply_failed", "request", requestTag(p.id))
++	}
++	return true
++}
++
++// cloudFallbackUnlock replaces a cloud answer with a local one.
++// Called with n.mu held; it unlocks.
++func (n *Native) cloudFallbackUnlock(p *nativeRequest, reason string) {
++	resolver, ok := n.resolver.(FallbackResolver)
++	if !ok || p.local || p.canceled {
++		n.mu.Unlock()
++		return
++	}
++	p.local = true
++	p.cloudAnswered = true
++	if p.cloudTimer != nil {
++		p.cloudTimer.Stop()
++	}
++	if n.OnRoute != nil {
++		n.OnRoute(p.id, "llm")
++	}
++	filler := ""
++	if n.CloudFallback != nil && n.CloudFallback.Enabled {
++		filler = strings.TrimSpace(n.CloudFallback.Filler)
++	}
++	if filler == "" {
++		p.ttsID = newID()
++		n.tts[p.ttsID] = p
++	} else {
++		p.progressSpeech = filler
++	}
++	n.emitCloudLocked(p, reason)
++	query := p.text
++	n.mu.Unlock()
++	slog.Info("native_cloud_fallback", "request", requestTag(p.id), "reason", reason, "filler", filler != "")
++	n.wg.Go(func() {
++		stop := func() {}
++		if filler != "" {
++			stop = n.progressAfter(p, 0)
++		}
++		result, err := resolver.Fallback(p.ctx, query)
++		stop()
++		if p.ctx.Err() != nil {
++			return
++		}
++		if errors.Is(err, context.Canceled) {
++			n.discardStale(p)
++			return
++		}
++		if err != nil {
++			n.discardSound(p)
++			result.Answer = "Сейчас не получилось получить ответ локальной модели."
++		}
++		n.mu.Lock()
++		if !p.streaming && p.ttsID == "" {
++			p.ttsID = newID()
++			n.tts[p.ttsID] = p
++		}
++		streaming := p.streaming
++		n.mu.Unlock()
++		if !streaming {
++			_ = n.sendCancel(p.ctx, p.id)
++		}
++		if err := n.reply(p, result.Answer); err != nil {
++			slog.Warn("native_reply_failed", "request", requestTag(p.id))
++		}
++		slog.Info("native_fallback", "request", requestTag(p.id), "route", "llm", "reason", reason)
++	})
++}
+diff --git a/internal/bridge/va_cloud_test.go b/internal/bridge/va_cloud_test.go
+new file mode 100644
+index 0000000..9536d46
+--- /dev/null
++++ b/internal/bridge/va_cloud_test.go
+@@ -0,0 +1,358 @@
++package bridge
++
++import (
++	"bytes"
++	"context"
++	"encoding/json/v2"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/coder/websocket"
++	directives "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
++	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
++	response "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
++	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
++	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
++	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
++
++	"quasarbridge/internal/wire"
++)
++
++type vaRouted struct {
++	source string
++	mu     sync.Mutex
++	fb     int
++}
++
++func (r *vaRouted) Decide(context.Context, string) RouteDecision {
++	return RouteDecision{Route: "yandex", Source: r.source}
++}
++func (r *vaRouted) ResolveDecision(context.Context, string, RouteDecision) (Resolution, error) {
++	return Resolution{Route: "yandex"}, nil
++}
++func (r *vaRouted) Resolve(ctx context.Context, s string) (Resolution, error) {
++	return r.ResolveDecision(ctx, s, r.Decide(ctx, s))
++}
++func (r *vaRouted) Fallback(context.Context, string) (Resolution, error) {
++	r.mu.Lock()
++	r.fb++
++	r.mu.Unlock()
++	return Resolution{Route: "llm", Answer: "Локальный ответ"}, nil
++}
++func (r *vaRouted) calls() int { r.mu.Lock(); defer r.mu.Unlock(); return r.fb }
++
++func vaMatched() []byte {
++	return aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: newID()}, Event: &client.TClientMessage_TEvent_MatchedUser{MatchedUser: &request.TAliceRequestProto{}}}}})
++}
++func vaCloud(id, text string, dirs ...*directives.TDirective) []byte {
++	return aa(&server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{RefMessageId: id}, Event: &server.TServerMessage_TEvent_AliceResponse{AliceResponse: &response.TAliceResponseProto{Response: &response.TAliceResponseProto_TResponse{Directives: dirs}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(text)}}}}}}})
++}
++
++func vaChans(t *testing.T, r Resolver) (*Native, chan wire.Frame, chan wire.Frame) {
++	up, down := make(chan wire.Frame, 200), make(chan wire.Frame, 200)
++	n := NewNative(t.Context(), func(_ context.Context, _ websocket.MessageType, b []byte) error {
++		up <- wire.Decode(b, wire.ClientToServer)
++		return nil
++	}, func(_ context.Context, _ websocket.MessageType, b []byte) error {
++		down <- wire.Decode(b, wire.ServerToClient)
++		return nil
++	}, r)
++	t.Cleanup(n.Close)
++	return n, up, down
++}
++
++// first spoken answer (non-empty AliceResponse) or the silent close
++func vaAnswer(t *testing.T, down chan wire.Frame) *response.TAliceResponseProto {
++	t.Helper()
++	deadline := time.After(2 * time.Second)
++	for {
++		select {
++		case f := <-down:
++			if r := f.Server.GetEvent().GetAliceResponse(); r != nil {
++				return r
++			}
++		case <-deadline:
++			t.Fatal("no response")
++		}
++	}
++}
++
++func vaEmptyFollowup(t *testing.T, n *Native, down chan wire.Frame, id string, matched int) *response.TAliceResponseProto {
++	t.Helper()
++	n.mu.Lock()
++	n.listenArmed = time.Now()
++	n.mu.Unlock()
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaVoice(id))
++	for range matched {
++		_ = n.Client(t.Context(), websocket.MessageBinary, vaMatched())
++	}
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaASR(id, ""))
++	return vaAnswer(t, down)
++}
++
++func TestVARepromptOnceWhenVoicePresent(t *testing.T) {
++	calls := 0
++	n, _, down := vaSession(t, &calls)
++	rp := DefaultFollowupReprompt()
++	n.Reprompt = &rp
++	r := vaEmptyFollowup(t, n, down, "r1", 5)
++	if got := r.GetVoiceResponse().GetOutputSpeech().GetText(); got != "Не расслышала, повтори." || !r.GetVoiceResponse().GetShouldListen() {
++		t.Fatalf("reprompt=%q listen=%v", got, r.GetVoiceResponse().GetShouldListen())
++	}
++	// the post-reply state is set by the resolve goroutine right after the
++	// response frame is sent; poll for it (never Fatal while holding n.mu)
++	armed := false
++	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
++		n.mu.Lock()
++		armed = !n.listenArmed.IsZero() && n.lastAsked
++		n.mu.Unlock()
++		if armed {
++			break
++		}
++	}
++	if !armed {
++		t.Fatal("reprompt must reopen the mic and count as a question")
++	}
++	// second empty follow-up in the same chain closes silently
++	r = vaEmptyFollowup(t, n, down, "r2", 5)
++	if r.GetVoiceResponse().GetHasVoiceResponse() || r.GetVoiceResponse().GetShouldListen() {
++		t.Fatal("second reprompt in one chain")
++	}
++	if calls != 0 {
++		t.Fatal("resolver called")
++	}
++}
++
++func TestVARepromptNeedsMatchedVoice(t *testing.T) {
++	calls := 0
++	n, _, down := vaSession(t, &calls)
++	rp := DefaultFollowupReprompt()
++	n.Reprompt = &rp
++	r := vaEmptyFollowup(t, n, down, "r3", 2)
++	if r.GetVoiceResponse().GetHasVoiceResponse() || r.GetVoiceResponse().GetShouldListen() {
++		t.Fatal("reprompt without enough voice")
++	}
++}
++
++func TestVARepromptDisabled(t *testing.T) {
++	calls := 0
++	n, _, down := vaSession(t, &calls)
++	rp := DefaultFollowupReprompt()
++	rp.Enabled = false
++	n.Reprompt = &rp
++	r := vaEmptyFollowup(t, n, down, "r4", 6)
++	if r.GetVoiceResponse().GetHasVoiceResponse() {
++		t.Fatal("reprompt while disabled")
++	}
++}
++
++func vaCloudRequest(t *testing.T, n *Native, up chan wire.Frame, id, text string) {
++	t.Helper()
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaVoice(id))
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaASR(id, text))
++	deadline := time.After(2 * time.Second)
++	for {
++		select {
++		case f := <-up:
++			if f.Kind() == "ContinueRequest" {
++				return
++			}
++		case <-deadline:
++			t.Fatal("not sent to cloud")
++		}
++	}
++}
++
++// expects the spoken filler, feeds its audio, then the final local answer
++func vaExpectFillerThenAnswer(t *testing.T, n *Native, up, down chan wire.Frame) {
++	t.Helper()
++	deadline := time.After(2 * time.Second)
++	sawCancel := false
++	for {
++		select {
++		case f := <-up:
++			if f.Kind() == "CancelRequest" {
++				sawCancel = true
++			}
++			if g := f.Client.GetEvent().GetTtsGenerate(); g != nil {
++				if g.GetText() != "Одну минуту." {
++					t.Fatalf("first TTS=%q", g.GetText())
++				}
++				if !sawCancel {
++					t.Fatal("cloud not canceled")
++				}
++				speech := []byte{0xf8, 0x77, 0x66, 0x55}
++				feedSpeech(t, n, f.Client.GetEvent().GetHeader().GetMessageId(), 72, false, speech)
++				heard := false
++				for {
++					select {
++					case f := <-up:
++						if g := f.Client.GetEvent().GetTtsGenerate(); g != nil {
++							if g.GetText() != "Локальный ответ" {
++								t.Fatalf("final TTS=%q", g.GetText())
++							}
++							if !heard {
++								t.Fatal("filler audio was discarded")
++							}
++							return
++						}
++					case f := <-down:
++						if f.Kind() == "opaque" && bytes.Contains(f.Raw, speech) {
++							heard = true
++						}
++					case <-deadline:
++						t.Fatal("no final answer")
++					}
++				}
++			}
++		case f := <-down:
++			if f.Kind() == "opaque" && bytes.Contains(f.Raw, []byte{0xf8, 0x77, 0x66, 0x55}) {
++				continue
++			}
++		case <-deadline:
++			t.Fatal("no filler")
++		}
++	}
++}
++
++func TestVACloudEmptyAnswerFallsBackWithFiller(t *testing.T) {
++	r := &vaRouted{source: "classifier"}
++	n, up, down := vaChans(t, r)
++	cf := DefaultCloudFallback()
++	n.CloudFallback = &cf
++	vaCloudRequest(t, n, up, "c1", "сколько лет черепахам")
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaCloud("c1", ""))
++	vaExpectFillerThenAnswer(t, n, up, down)
++	if r.calls() != 1 {
++		t.Fatal("fallback not called once")
++	}
++}
++
++func TestVACloudRefusalFallsBackWithFiller(t *testing.T) {
++	r := &vaRouted{source: "classifier"}
++	n, up, down := vaChans(t, r)
++	cf := DefaultCloudFallback()
++	n.CloudFallback = &cf
++	vaCloudRequest(t, n, up, "c2", "почему кошки мурчат")
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaCloud("c2", "Я не знаю, что на это ответить.", &directives.TDirective{Type: "client_action", Name: "tts_play_placeholder"}))
++	vaExpectFillerThenAnswer(t, n, up, down)
++}
++
++func TestVACloudTimeoutFallsBack(t *testing.T) {
++	r := &vaRouted{source: "classifier"}
++	n, up, down := vaChans(t, r)
++	cf := DefaultCloudFallback()
++	cf.TimeoutMS = 30
++	n.CloudFallback = &cf
++	vaCloudRequest(t, n, up, "c3", "сколько лет черепахам")
++	vaExpectFillerThenAnswer(t, n, up, down)
++	// a late cloud answer is dropped
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaCloud("c3", "Поздний ответ"))
++	select {
++	case f := <-down:
++		if r := f.Server.GetEvent().GetAliceResponse(); r != nil && strings.Contains(r.GetVoiceResponse().GetOutputSpeech().GetText(), "Поздний") {
++			t.Fatal("late cloud answer leaked")
++		}
++	case <-time.After(50 * time.Millisecond):
++	}
++}
++
++func vaNoFallback(t *testing.T, source, text string, resp []byte, timeout int) {
++	t.Helper()
++	r := &vaRouted{source: source}
++	n, up, down := vaChans(t, r)
++	cf := DefaultCloudFallback()
++	cf.TimeoutMS = timeout
++	n.CloudFallback = &cf
++	vaCloudRequest(t, n, up, "x1", text)
++	if resp != nil {
++		_ = n.Server(t.Context(), websocket.MessageBinary, resp)
++	}
++	time.Sleep(80 * time.Millisecond)
++	if r.calls() != 0 {
++		t.Fatalf("fallback for source=%s text=%q", source, text)
++	}
++	for len(up) > 0 {
++		if f := <-up; f.Kind() == "TtsGenerate" {
++			t.Fatal("local speech")
++		}
++	}
++	_ = down
++}
++
++func TestVACloudFallbackSkips(t *testing.T) {
++	t.Run("rule_route", func(t *testing.T) {
++		vaNoFallback(t, "rule", "сколько лет черепахам", vaCloud("x1", ""), 0)
++	})
++	t.Run("timer_text", func(t *testing.T) {
++		vaNoFallback(t, "classifier", "поставь таймер на пять минут", vaCloud("x1", ""), 0)
++	})
++	t.Run("device_directive", func(t *testing.T) {
++		vaNoFallback(t, "classifier", "сколько лет черепахам", vaCloud("x1", "", &directives.TDirective{Type: "client_action", Name: "sound_louder"}), 0)
++	})
++	t.Run("normal_answer", func(t *testing.T) {
++		vaNoFallback(t, "classifier", "сколько лет черепахам", vaCloud("x1", "До ста лет."), 30)
++	})
++	t.Run("timeout_rule", func(t *testing.T) { vaNoFallback(t, "rule", "сколько лет черепахам", nil, 20) })
++	t.Run("timeout_excluded", func(t *testing.T) { vaNoFallback(t, "classifier", "включи музыку", nil, 20) })
++}
++
++func TestVAEventsPostCloudAndFollowup(t *testing.T) {
++	got := make(chan map[string]any, 10)
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		b, _ := io.ReadAll(r.Body)
++		var m map[string]any
++		_ = json.Unmarshal(b, &m)
++		if r.Header.Get("Authorization") != "Bearer k" {
++			m["auth"] = "missing"
++		}
++		got <- m
++	}))
++	defer srv.Close()
++	r := &vaRouted{source: "classifier"}
++	n, up, _ := vaChans(t, r)
++	n.Events = &EventSink{URL: srv.URL, APIKey: "k", Model: "station-midi"}
++	vaCloudRequest(t, n, up, "e1", "сколько будет два плюс два")
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaCloud("e1", "Четыре."))
++	select {
++	case m := <-got:
++		if m["event"] != "cloud" || m["result"] != "answer" || m["text"] != "сколько будет два плюс два" || m["cloud_bytes"] != float64(len("Четыре.")) || m["model"] != "station-midi" || m["auth"] != nil {
++			t.Fatalf("event=%v", m)
++		}
++	case <-time.After(2 * time.Second):
++		t.Fatal("no cloud event")
++	}
++	n.mu.Lock()
++	n.listenArmed = time.Now()
++	n.mu.Unlock()
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaVoice("e2"))
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaMatched())
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaASR("e2", ""))
++	select {
++	case m := <-got:
++		if m["event"] != "followup" || m["result"] != "silent" || m["matched"] != float64(1) || m["text"] != nil {
++			t.Fatalf("event=%v", m)
++		}
++	case <-time.After(2 * time.Second):
++		t.Fatal("no followup event")
++	}
++}
++
++func TestVACloudRefusalInVoiceBehindCard(t *testing.T) {
++	r := &vaRouted{source: "classifier"}
++	n, up, down := vaChans(t, r)
++	cf := DefaultCloudFallback()
++	n.CloudFallback = &cf
++	vaCloudRequest(t, n, up, "c9", "сорок четыре рубля минус шесть процентов")
++	card := new("Вот что нашлось")
++	resp := aa(&server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{RefMessageId: "c9"}, Event: &server.TServerMessage_TEvent_AliceResponse{AliceResponse: &response.TAliceResponseProto{
++		Response:      &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Text: card}}, Directives: []*directives.TDirective{{Type: "client_action", Name: "tts_play_placeholder"}}},
++		VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new("Я не знаю, как это объяснить.")}}}}}}})
++	_ = n.Server(t.Context(), websocket.MessageBinary, resp)
++	vaExpectFillerThenAnswer(t, n, up, down)
++}
+diff --git a/internal/bridge/va_ellipsis.go b/internal/bridge/va_ellipsis.go
+new file mode 100644
+index 0000000..b923b65
+--- /dev/null
++++ b/internal/bridge/va_ellipsis.go
+@@ -0,0 +1,87 @@
++package bridge
++
++import (
++	"context"
++	"slices"
++	"strings"
++	"time"
++)
++
++// EllipsisFollowup keeps a short elliptical continuation such as «а музыку»
++// from being captured by keyword rules that force the cloud. Explicit commands
++// still match those rules. Nil or Enabled false leaves routing unchanged.
++type EllipsisFollowup struct {
++	Enabled   bool     `json:"enabled"`
++	WindowS   int      `json:"window_s"`
++	MaxWords  int      `json:"max_words"`
++	Prefixes  []string `json:"prefixes"`
++	Commands  []string `json:"commands"`
++	SkipRules []string `json:"skip_rules"`
++}
++
++func DefaultEllipsisFollowup() EllipsisFollowup {
++	return EllipsisFollowup{
++		Enabled:   true,
++		WindowS:   15,
++		MaxWords:  4,
++		Prefixes:  []string{"ну а", "а"},
++		Commands:  strings.Fields("включи включить включай выключи выключить поставь поставить запусти открой закрой сделай убавь прибавь найди сыграй играй давай отмени останови продолжи следующий следующую предыдущий громче тише стоп хватит пауза вруби выруби"),
++		SkipRules: []string{"yandex_services"},
++	}
++}
++
++// IsEllipsis reports whether text looks like «а …»: a configured prefix, at
++// most MaxWords words, and the word after the prefix is not a command verb.
++func (c *EllipsisFollowup) IsEllipsis(text string) bool {
++	if c == nil || !c.Enabled {
++		return false
++	}
++	words := vaWords(text)
++	if len(words) > 0 && words[0] == "алиса" {
++		words = words[1:]
++	}
++	if len(words) < 2 || len(words) > c.MaxWords {
++		return false
++	}
++	for _, prefix := range c.Prefixes {
++		pw := vaWords(prefix)
++		if len(pw) == 0 || len(words) <= len(pw) || !slices.Equal(words[:len(pw)], pw) {
++			continue
++		}
++		next := words[len(pw)]
++		for _, cmd := range c.Commands {
++			if cw := vaWords(cmd); len(cw) == 1 && cw[0] == next {
++				return false
++			}
++		}
++		return true
++	}
++	return false
++}
++
++// InWindow reports whether an utterance that began at start follows an answer
++// that finished at last closely enough.
++func (c *EllipsisFollowup) InWindow(last, start time.Time) bool {
++	if c == nil || !c.Enabled || last.IsZero() || start.IsZero() || start.Before(last) {
++		return false
++	}
++	return start.Sub(last) <= time.Duration(c.WindowS)*time.Second
++}
++
++type skipRulesKey struct{}
++
++// WithSkipRules marks a request whose keyword rules with these names are ignored.
++func WithSkipRules(ctx context.Context, rules []string) context.Context {
++	if len(rules) == 0 {
++		return ctx
++	}
++	return context.WithValue(ctx, skipRulesKey{}, slices.Clone(rules))
++}
++
++func skipRulesFrom(ctx context.Context) []string {
++	if ctx == nil {
++		return nil
++	}
++	rules, _ := ctx.Value(skipRulesKey{}).([]string)
++	return rules
++}
+diff --git a/internal/bridge/va_ellipsis_test.go b/internal/bridge/va_ellipsis_test.go
+new file mode 100644
+index 0000000..550e6be
+--- /dev/null
++++ b/internal/bridge/va_ellipsis_test.go
+@@ -0,0 +1,127 @@
++package bridge
++
++import (
++	"context"
++	"slices"
++	"testing"
++	"time"
++
++	"github.com/coder/websocket"
++	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
++	requeststat "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/request_stat"
++	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
++)
++
++func TestVAEllipsisDetect(t *testing.T) {
++	c := DefaultEllipsisFollowup()
++	for text, want := range map[string]bool{
++		"А музыку":             true,
++		"а музыку?":            true,
++		"Алиса, а музыку":      true,
++		"ну а погоду":          true,
++		"а кто написал музыку": true,
++		"А включи музыку":      false,
++		"а поставь таймер":     false,
++		"а громче":             false,
++		"включи музыку":        false,
++		"музыку":               false,
++		"а":                    false,
++		"а какая музыка была в том фильме": false,
++	} {
++		if got := c.IsEllipsis(text); got != want {
++			t.Errorf("%q: %v", text, got)
++		}
++	}
++	c.Enabled = false
++	if c.IsEllipsis("а музыку") {
++		t.Fatal("disabled")
++	}
++	var nilc *EllipsisFollowup
++	if nilc.IsEllipsis("а музыку") || nilc.InWindow(time.Now(), time.Now()) {
++		t.Fatal("nil config")
++	}
++}
++
++func TestVAEllipsisWindow(t *testing.T) {
++	c := DefaultEllipsisFollowup()
++	now := time.Now()
++	if !c.InWindow(now.Add(-14*time.Second), now) || c.InWindow(now.Add(-16*time.Second), now) || c.InWindow(time.Time{}, now) || c.InWindow(now.Add(time.Second), now) {
++		t.Fatal("window")
++	}
++}
++
++func TestVAEllipsisSkipsOnlyNamedRules(t *testing.T) {
++	e := &Engine{}
++	skip := WithSkipRules(t.Context(), []string{"yandex_services"})
++	if d := e.Decide(t.Context(), "А музыку"); d.Rule != "yandex_services" {
++		t.Fatalf("outside the window: %+v", d)
++	}
++	if d := e.Decide(skip, "А музыку"); d.Rule != "" || d.Source == "rule" { // no classifier here: classifier_error
++		t.Fatalf("ellipsis must reach the classifier: %+v", d)
++	}
++	for _, text := range []string{"включи музыку", "а включи музыку"} {
++		if d := e.Decide(t.Context(), text); d.Route != "yandex" {
++			t.Fatalf("%q: %+v", text, d)
++		}
++	}
++	if d := e.Decide(skip, "хватит"); d.Route != "yandex" || d.Rule != "speaker_playback" {
++		t.Fatalf("other rules must stay: %+v", d)
++	}
++}
++
++type vaSkipRecorder struct{ got chan []string }
++
++func (r *vaSkipRecorder) Decide(ctx context.Context, string string) RouteDecision {
++	r.got <- skipRulesFrom(ctx)
++	return RouteDecision{Route: "yandex", Source: "rule"}
++}
++func (r *vaSkipRecorder) ResolveDecision(context.Context, string, RouteDecision) (Resolution, error) {
++	return Resolution{Route: "yandex"}, nil
++}
++func (r *vaSkipRecorder) Resolve(ctx context.Context, s string) (Resolution, error) {
++	return r.ResolveDecision(ctx, s, r.Decide(ctx, s))
++}
++
++func vaStatEnded(id string) []byte {
++	return aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: newID()}, Event: &client.TClientMessage_TEvent_RequestStat{RequestStat: &requeststat.TRequestStat{RequestMessageId: id, Timestamps: &requeststat.TRequestStat_TTimestamps{OnSoundPlayerEndTime: new("1761930000000")}}}}}})
++}
++
++func TestVAEllipsisNativeWindow(t *testing.T) {
++	r := &vaSkipRecorder{got: make(chan []string, 10)}
++	n, _, _ := vaChans(t, r)
++	ef := DefaultEllipsisFollowup()
++	n.Ellipsis = &ef
++	ask := func(id, text string) []string {
++		t.Helper()
++		_ = n.Client(t.Context(), websocket.MessageBinary, vaVoice(id))
++		_ = n.Server(t.Context(), websocket.MessageBinary, vaASR(id, text))
++		select {
++		case s := <-r.got:
++			return s
++		case <-time.After(2 * time.Second):
++			t.Fatal("no decision")
++		}
++		return nil
++	}
++	if s := ask("e1", "а музыку"); s != nil {
++		t.Fatalf("no answer yet: %v", s)
++	}
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaStatEnded("e1"))
++	if s := ask("e2", "А музыку"); !slices.Equal(s, []string{"yandex_services"}) {
++		t.Fatalf("in the window: %v", s)
++	}
++	if s := ask("e3", "а включи музыку"); s != nil {
++		t.Fatalf("explicit command: %v", s)
++	}
++	n.mu.Lock()
++	n.lastAnswer = time.Now().Add(-20 * time.Second)
++	n.mu.Unlock()
++	if s := ask("e4", "а музыку"); s != nil {
++		t.Fatalf("window expired: %v", s)
++	}
++	n.Ellipsis = nil
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaStatEnded("e4"))
++	if s := ask("e5", "а музыку"); s != nil {
++		t.Fatalf("feature off: %v", s)
++	}
++}
+diff --git a/internal/bridge/va_filler.go b/internal/bridge/va_filler.go
+new file mode 100644
+index 0000000..d19be8e
+--- /dev/null
++++ b/internal/bridge/va_filler.go
+@@ -0,0 +1,78 @@
++package bridge
++
++import (
++	"strings"
++	"unicode"
++)
++
++// FollowupFilter drops short acknowledgements and background fragments heard in
++// the window after a local reply. A nil filter or Enabled false keeps them.
++type FollowupFilter struct {
++	Enabled       bool     `json:"enabled"`
++	Fillers       []string `json:"fillers"`
++	Keep          []string `json:"keep"`
++	ShortMaxWords int      `json:"short_max_words"`
++}
++
++func DefaultFollowupFilter() FollowupFilter {
++	return FollowupFilter{Enabled: true, ShortMaxWords: 2,
++		Fillers: strings.Fields("понятно ага ясно спасибо ладно хорошо окей угу ну да-да ага-ага угу-угу ясненько понял поняла принято отлично супер класс круто ок-ок спасибочки благодарю мерси"),
++		Keep: strings.Fields("алиса да нет не неа давай давайте ок конечно ага-да верно точно отмена стоп хватит громче тише еще ещё дальше повтори снова опять " +
++			"а и что как где когда сколько какой какая какое какие почему зачем кто чей ли куда откуда в во на про для с со у о об по до от из за под над при"),
++	}
++}
++
++func vaWords(s string) []string {
++	s = strings.ReplaceAll(strings.ToLower(s), "ё", "е")
++	return strings.FieldsFunc(s, func(r rune) bool { return !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-') })
++}
++
++func (f *FollowupFilter) set(xs []string) map[string]bool {
++	m := map[string]bool{}
++	for _, x := range xs {
++		m[strings.Join(vaWords(x), " ")] = true
++	}
++	return m
++}
++
++// IsFiller reports whether a follow-up utterance should be ignored silently.
++func (f *FollowupFilter) IsFiller(text string) bool {
++	if f == nil || !f.Enabled || strings.Contains(text, "?") {
++		return false
++	}
++	words := vaWords(text)
++	if len(words) == 0 {
++		return false
++	}
++	keep, fill := f.set(f.Keep), f.set(f.Fillers)
++	for _, word := range words {
++		if keep[word] {
++			return false
++		}
++	}
++	if fill[strings.Join(words, " ")] {
++		return true
++	}
++	allFill := true
++	for _, word := range words {
++		if !fill[word] {
++			allFill = false
++		}
++	}
++	if allFill {
++		return true
++	}
++	if len(words) > f.ShortMaxWords {
++		return false
++	}
++	for _, word := range words {
++		runes := []rune(word)
++		if unicode.IsDigit(runes[0]) {
++			return false
++		}
++		if len(runes) > 3 && (strings.HasSuffix(word, "и") || strings.HasSuffix(word, "й") || strings.HasSuffix(word, "ь") || strings.HasSuffix(word, "те")) {
++			return false
++		}
++	}
++	return true
++}
+diff --git a/internal/bridge/va_filler_test.go b/internal/bridge/va_filler_test.go
+new file mode 100644
+index 0000000..8b84b5f
+--- /dev/null
++++ b/internal/bridge/va_filler_test.go
+@@ -0,0 +1,74 @@
++package bridge
++
++import (
++	"testing"
++	"time"
++
++	"github.com/coder/websocket"
++)
++
++func TestVAFillerClassifier(t *testing.T) {
++	f := DefaultFollowupFilter()
++	for _, s := range []string{"понятно", "Понятно.", "ага", "спасибо", "ну ладно", "да-да", "угу", "окей", "хорошо", "ясно спасибо", "мама пришла", "интересная штука"} {
++		if !f.IsFiller(s) {
++			t.Errorf("must be filler: %q", s)
++		}
++	}
++	for _, s := range []string{"а завтра", "а в детской", "громче", "выключи свет", "да", "нет", "давай", "ок", "Алиса понятно",
++		"сколько градусов", "что?", "включи", "в зале", "почему", "поставь таймер на 5 минут", "расскажи подробнее про погоду завтра", "10"} {
++		if f.IsFiller(s) {
++			t.Errorf("must pass: %q", s)
++		}
++	}
++	off := DefaultFollowupFilter()
++	off.Enabled = false
++	if off.IsFiller("понятно") {
++		t.Error("disabled filter must pass everything")
++	}
++	var nilF *FollowupFilter
++	if nilF.IsFiller("понятно") {
++		t.Error("nil filter must pass")
++	}
++}
++
++func vaRunFollowUp(t *testing.T, asked bool, text string) (silent bool, calls int) {
++	n, up, down := vaSession(t, &calls)
++	f := DefaultFollowupFilter()
++	n.Filler = &f
++	n.listenArmed = time.Now()
++	n.lastAsked = asked
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaVoice("ff"))
++	<-up
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaASR("ff", text))
++	<-down
++	deadline := time.After(2 * time.Second)
++	for {
++		select {
++		case <-up:
++		case fr := <-down:
++			if r := fr.Server.GetEvent().GetAliceResponse(); r != nil {
++				return !r.GetVoiceResponse().GetHasVoiceResponse(), calls
++			}
++		case <-deadline:
++			t.Fatal("no response")
++		}
++	}
++}
++
++func TestVAFillerFollowUpSilent(t *testing.T) {
++	if silent, calls := vaRunFollowUp(t, false, "понятно"); !silent || calls != 0 {
++		t.Fatalf("filler must close silently: silent=%v calls=%d", silent, calls)
++	}
++}
++
++func TestVAFillerAfterOurQuestionPasses(t *testing.T) {
++	if silent, calls := vaRunFollowUp(t, true, "хорошо"); silent || calls != 1 {
++		t.Fatalf("after our question reply must pass: silent=%v calls=%d", silent, calls)
++	}
++}
++
++func TestVAQuestionFollowUpPasses(t *testing.T) {
++	if silent, calls := vaRunFollowUp(t, false, "а завтра"); silent || calls != 1 {
++		t.Fatalf("question must pass: silent=%v calls=%d", silent, calls)
++	}
++}
+diff --git a/internal/bridge/va_silent_followup_test.go b/internal/bridge/va_silent_followup_test.go
+new file mode 100644
+index 0000000..fb49c59
+--- /dev/null
++++ b/internal/bridge/va_silent_followup_test.go
+@@ -0,0 +1,136 @@
++package bridge
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/coder/websocket"
++	common "github.com/freequasar/quasar-go-genproto/proto/alice/megamind/protos/common"
++	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
++	asr "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result"
++	recognition "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/asr_result/common"
++	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
++	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
++	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
++
++	"quasarbridge/internal/wire"
++)
++
++func vaVoice(id string) []byte {
++	return aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: id, StreamId: new(int64(1))}, Event: &client.TClientMessage_TEvent_VoiceInput{VoiceInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Type: common.EEventType_voice_input.Enum()}}, Format: new("audio/opus")}}}}})
++}
++func vaASR(id, text string) []byte {
++	return aa(&server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{RefMessageId: id}, Event: &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{EndOfUtt: new(true), Recognition: []*recognition.TAsrRecognition{{Normalized: new(text)}}}}}}})
++}
++
++func vaSession(t *testing.T, called *int) (*Native, chan wire.Frame, chan wire.Frame) {
++	up, down := make(chan wire.Frame, 100), make(chan wire.Frame, 100)
++	n := NewNative(t.Context(), func(_ context.Context, _ websocket.MessageType, b []byte) error {
++		up <- wire.Decode(b, wire.ClientToServer)
++		return nil
++	}, func(_ context.Context, _ websocket.MessageType, b []byte) error {
++		down <- wire.Decode(b, wire.ServerToClient)
++		return nil
++	}, resolverFunc(func(context.Context, string) (Resolution, error) {
++		*called++
++		return Resolution{Route: "llm", Answer: "Готово."}, nil
++	}))
++	t.Cleanup(n.Close)
++	return n, up, down
++}
++
++func TestVAEmptyFollowUpClosesSilently(t *testing.T) {
++	calls := 0
++	n, up, down := vaSession(t, &calls)
++	n.listenArmed = time.Now()
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaVoice("f1"))
++	if k := (<-up).Kind(); k != "VoiceInput" {
++		t.Fatalf("first up=%s", k)
++	}
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaASR("f1", ""))
++	<-down
++	sawCancel := false
++	deadline := time.After(2 * time.Second)
++	for !sawCancel {
++		select {
++		case f := <-up:
++			switch f.Kind() {
++			case "CancelRequest":
++				sawCancel = true
++			case "ContinueRequest", "TtsGenerate":
++				t.Fatalf("unexpected %s", f.Kind())
++			}
++		case <-deadline:
++			t.Fatal("no cancel")
++		}
++	}
++	for {
++		select {
++		case f := <-down:
++			if r := f.Server.GetEvent().GetAliceResponse(); r != nil {
++				if r.GetVoiceResponse().GetShouldListen() || r.GetVoiceResponse().GetHasVoiceResponse() {
++					t.Fatalf("must close without speech/listen: %v", r.GetVoiceResponse())
++				}
++				if calls != 0 {
++					t.Fatal("resolver called")
++				}
++				select {
++				case f := <-up:
++					if f.Kind() == "TtsGenerate" || f.Kind() == "ContinueRequest" {
++						t.Fatalf("unexpected %s", f.Kind())
++					}
++				case <-time.After(100 * time.Millisecond):
++				}
++				if !n.listenArmed.IsZero() {
++					t.Fatal("must not re-arm (loop)")
++				}
++				return
++			}
++		case <-time.After(2 * time.Second):
++			t.Fatal("no silent response")
++		}
++	}
++}
++
++func TestVAEmptyFirstRequestStillGoesToYandex(t *testing.T) {
++	calls := 0
++	n, up, down := vaSession(t, &calls)
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaVoice("f2"))
++	<-up
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaASR("f2", ""))
++	<-down
++	select {
++	case f := <-up:
++		if f.Kind() != "ContinueRequest" {
++			t.Fatalf("kind=%s", f.Kind())
++		}
++	case <-time.After(2 * time.Second):
++		t.Fatal("no continue")
++	}
++}
++
++func TestVANonEmptyFollowUpRoutesNormally(t *testing.T) {
++	calls := 0
++	n, up, down := vaSession(t, &calls)
++	n.listenArmed = time.Now()
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaVoice("f3"))
++	<-up
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaASR("f3", "что в списке покупок"))
++	<-down
++	deadline := time.After(2 * time.Second)
++	for {
++		select {
++		case f := <-down:
++			if r := f.Server.GetEvent().GetAliceResponse(); r != nil {
++				if calls != 1 || !r.GetVoiceResponse().GetHasVoiceResponse() {
++					t.Fatalf("calls=%d resp=%v", calls, r.GetVoiceResponse())
++				}
++				return
++			}
++		case <-up:
++		case <-deadline:
++			t.Fatal("no answer")
++		}
++	}
++}
+diff --git a/internal/bridge/va_stop_test.go b/internal/bridge/va_stop_test.go
+new file mode 100644
+index 0000000..533a786
+--- /dev/null
++++ b/internal/bridge/va_stop_test.go
+@@ -0,0 +1,140 @@
++package bridge
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/coder/websocket"
++	common "github.com/freequasar/quasar-go-genproto/proto/alice/megamind/protos/common"
++	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
++	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
++	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
++)
++
++func contextWithCancel(n *Native) (context.Context, context.CancelFunc) {
++	return context.WithCancel(n.ctx)
++}
++
++func vaText(id, text string) []byte {
++	return aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: id}, Event: &client.TClientMessage_TEvent_TextInput{TextInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Type: common.EEventType_text_input.Enum(), Text: new(text)}}}}}}})
++}
++
++func TestVAStopRegex(t *testing.T) {
++	for _, s := range []string{"стоп", "Стоп.", "алиса стоп", "хватит", "замолчи", "отмена", "тихо", "хватит пожалуйста"} {
++		if !vaIsStop(s) {
++			t.Errorf("must match %q", s)
++		}
++	}
++	for _, s := range []string{"стоп кран", "останови музыку", "тише", "хватит ли молока", "", "сделай тихо в зале"} {
++		if vaIsStop(s) {
++			t.Errorf("must not match %q", s)
++		}
++	}
++}
++
++func TestVAStopFollowUpClosesSilently(t *testing.T) {
++	calls := 0
++	n, up, down := vaSession(t, &calls)
++	n.listenArmed = time.Now()
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaVoice("s1"))
++	<-up
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaASR("s1", "стоп"))
++	<-down
++	deadline := time.After(2 * time.Second)
++	for {
++		select {
++		case f := <-up:
++			if f.Kind() == "ContinueRequest" || f.Kind() == "TtsGenerate" {
++				t.Fatalf("stop must not go to Yandex/TTS: %s", f.Kind())
++			}
++		case f := <-down:
++			if r := f.Server.GetEvent().GetAliceResponse(); r != nil {
++				if r.GetVoiceResponse().GetShouldListen() || r.GetVoiceResponse().GetHasVoiceResponse() || calls != 0 {
++					t.Fatalf("must close silently: calls=%d %v", calls, r.GetVoiceResponse())
++				}
++				return
++			}
++		case <-deadline:
++			t.Fatal("no silent response")
++		}
++	}
++}
++
++func TestVAStopOutsideWindowGoesToResolver(t *testing.T) {
++	calls := 0
++	n, up, down := vaSession(t, &calls)
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaVoice("s2"))
++	<-up
++	_ = n.Server(t.Context(), websocket.MessageBinary, vaASR("s2", "стоп"))
++	<-down
++	deadline := time.After(2 * time.Second)
++	for {
++		select {
++		case <-up:
++		case f := <-down:
++			if f.Server.GetEvent().GetAliceResponse() != nil {
++				if calls != 1 {
++					t.Fatalf("outside window stop must be routed as before, calls=%d", calls)
++				}
++				return
++			}
++		case <-deadline:
++			t.Fatal("no answer")
++		}
++	}
++}
++
++func vaLocal(n *Native, id, tts string) *nativeRequest {
++	ctx, cancel := contextWithCancel(n)
++	q := &nativeRequest{id: id, local: true, started: true, ttsID: tts, ctx: ctx, cancel: cancel, expires: time.NewTimer(time.Hour)}
++	n.mu.Lock()
++	n.requests[id] = q
++	n.mu.Unlock()
++	return q
++}
++
++func TestVANewVoiceInterruptsOurSpeech(t *testing.T) {
++	calls := 0
++	n, up, _ := vaSession(t, &calls)
++	speaking := vaLocal(n, "old", "tts-old")
++	done := vaLocal(n, "done", "tts-done")
++	done.played = true
++	music := vaLocal(n, "music", "tts-music")
++	music.soundDirective = &soundDirective{}
++	cloud := vaLocal(n, "cloud", "tts-cloud")
++	cloud.cloud = true
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaVoice("new"))
++	cancels := map[string]bool{}
++	timeout := time.After(time.Second)
++loop:
++	for {
++		select {
++		case f := <-up:
++			if c := f.Client.GetEvent().GetCancelRequest(); c != nil {
++				cancels[c.GetRequestMessageId()] = true
++			}
++			if f.Kind() == "VoiceInput" {
++				break loop
++			}
++		case <-timeout:
++			break loop
++		}
++	}
++	if !speaking.canceled || !cancels["tts-old"] {
++		t.Fatalf("our speech must be canceled: %v %v", speaking.canceled, cancels)
++	}
++	if done.canceled || music.canceled || cloud.canceled || cancels["tts-done"] || cancels["tts-music"] || cancels["tts-cloud"] {
++		t.Fatal("finished/music/cloud requests must stay untouched")
++	}
++}
++
++func TestVATextInputDoesNotInterrupt(t *testing.T) {
++	calls := 0
++	n, _, _ := vaSession(t, &calls)
++	speaking := vaLocal(n, "old2", "tts-old2")
++	_ = n.Client(t.Context(), websocket.MessageBinary, vaText("txt", "привет"))
++	if speaking.canceled {
++		t.Fatal("text input must not interrupt")
++	}
++}
+diff --git a/internal/llm/client.go b/internal/llm/client.go
+index 9c25f8e..1b50f2b 100644
+--- a/internal/llm/client.go
++++ b/internal/llm/client.go
+@@ -12,6 +12,8 @@ import (
+ 	"regexp"
+ 	"strings"
+ 	"time"
++
++	"quasarbridge/internal/reply"
+ )
+ 
+ type Message struct {
+@@ -154,10 +156,14 @@ func (c *Client) chatCompletions(ctx context.Context, messages []Message, struct
+ 			Message      Message `json:"message"`
+ 			FinishReason string  `json:"finish_reason"`
+ 		} `json:"choices"`
++		VAListen *bool `json:"va_listen"`
+ 	}
+ 	if err := json.Unmarshal(data, &result); err != nil {
+ 		return Message{}, errors.New("invalid LLM response")
+ 	}
++	if !structured && result.VAListen != nil && !*result.VAListen {
++		reply.SuppressListening(ctx)
++	}
+ 	if len(result.Choices) == 0 || (strings.TrimSpace(result.Choices[0].Message.Content) == "" && len(result.Choices[0].Message.ToolCalls) == 0) {
+ 		return Message{}, errors.New("LLM returned no answer")
+ 	}
+diff --git a/internal/llm/va_listen_test.go b/internal/llm/va_listen_test.go
+new file mode 100644
+index 0000000..96ed26f
+--- /dev/null
++++ b/internal/llm/va_listen_test.go
+@@ -0,0 +1,39 @@
++package llm
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"quasarbridge/internal/reply"
++)
++
++func TestVAListenFlagSuppressesListening(t *testing.T) {
++	for _, tc := range []struct {
++		name, body string
++		structured bool
++		want       bool
++	}{
++		{"false", `{"choices":[{"message":{"role":"assistant","content":"Готово."},"finish_reason":"stop"}],"va_listen":false}`, false, false},
++		{"true", `{"choices":[{"message":{"role":"assistant","content":"Включить?"},"finish_reason":"stop"}],"va_listen":true}`, false, true},
++		{"absent", `{"choices":[{"message":{"role":"assistant","content":"Ответ."},"finish_reason":"stop"}]}`, false, true},
++		{"structured ignored", `{"choices":[{"message":{"role":"assistant","content":"{\"route\":\"llm\"}"},"finish_reason":"stop"}],"va_listen":false}`, true, true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.Header().Set("Content-Type", "application/json")
++				_, _ = w.Write([]byte(tc.body))
++			}))
++			defer srv.Close()
++			ctx := reply.WithPolicy(context.Background())
++			c := &Client{BaseURL: srv.URL, Model: "m"}
++			if _, err := c.Complete(ctx, []Message{{Role: "user", Content: "q"}}, tc.structured); err != nil {
++				t.Fatal(err)
++			}
++			if got := reply.ListeningAllowed(ctx); got != tc.want {
++				t.Fatalf("ListeningAllowed=%v want %v", got, tc.want)
++			}
++		})
++	}
++}
