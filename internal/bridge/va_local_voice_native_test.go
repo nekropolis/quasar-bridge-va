@@ -220,3 +220,39 @@ func TestTakeLocalFollowCancelsPendingListen(t *testing.T) {
 		t.Fatal("tagged request must not inherit")
 	}
 }
+
+func TestLocalListenRetriesWhenStationIgnoresIt(t *testing.T) {
+	old := localListenCheck
+	localListenCheck = 80 * time.Millisecond
+	defer func() { localListenCheck = old }()
+	var mu sync.Mutex
+	calls := 0
+	n := &Native{ctx: t.Context(), LocalVoice: &LocalVoice{ListenSlackMS: 1, Listen: func(context.Context) error {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		return nil
+	}}}
+	n.scheduleLocalListen("x", "dark_side_to_llm", time.Millisecond)
+	time.Sleep(600 * time.Millisecond) // nothing heard: 1 + 2 retries, then stop
+	mu.Lock()
+	if calls != 3 {
+		t.Fatalf("listen calls=%d, want 3", calls)
+	}
+	mu.Unlock()
+	// a request right after the first listen stops the retries
+	calls = 0
+	n.scheduleLocalListen("y", "dark_side_to_llm", time.Millisecond)
+	time.Sleep(40 * time.Millisecond)
+	n.mu.Lock()
+	if rule := n.takeLocalFollow(true, false); rule != "dark_side_to_llm" {
+		t.Fatalf("rule %q", rule)
+	}
+	n.mu.Unlock()
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("listen calls after heard=%d, want 1", calls)
+	}
+}

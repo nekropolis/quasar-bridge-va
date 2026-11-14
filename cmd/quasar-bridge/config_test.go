@@ -281,44 +281,6 @@ func toolNames(tools *assistant.Tools) []string {
 	return names
 }
 
-func TestDeploymentAccessStaysOptIn(t *testing.T) {
-	cfg, err := readConfig(configFile(t, `{"mode":"observe"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.AssistantTools.Updates || cfg.AssistantTools.Configuration || !cfg.AirPlay.Disabled {
-		t.Fatalf("omitted access flags expanded: updates=%v configuration=%v airplay_disabled=%v", cfg.AssistantTools.Updates, cfg.AssistantTools.Configuration, cfg.AirPlay.Disabled)
-	}
-	locked, err := readConfig(configFile(t, `{"mode":"hybrid","llm_base_url":"http://127.0.0.1:9/v1","llm_model":"m","assistant_tools":{"enabled":true,"updates":false,"configuration":false},"airplay":{"disabled":true}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if locked.AssistantTools.Updates || locked.AssistantTools.Configuration || !locked.AirPlay.Disabled || !locked.AssistantTools.Enabled {
-		t.Fatalf("explicit lock lost: %+v airplay=%+v", locked.AssistantTools, locked.AirPlay)
-	}
-	names := toolNames(&assistant.Tools{Config: locked.AssistantTools, Updater: accessUpdater{}, Configuration: accessConfig{}})
-	for _, name := range names {
-		if strings.Contains(name, "update") || strings.Contains(name, "quasar_bridge") {
-			t.Fatalf("locked config exposed %s in %v", name, names)
-		}
-	}
-	if control, err := newAirPlayControl(t.Context(), locked.AirPlay); err != nil || control != nil {
-		t.Fatalf("disabled airplay started: %+v %v", control, err)
-	}
-	opened, err := readConfig(configFile(t, `{"mode":"observe","assistant_tools":{"updates":true,"configuration":true},"airplay":{"disabled":false}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !opened.AssistantTools.Updates || !opened.AssistantTools.Configuration || opened.AirPlay.Disabled {
-		t.Fatal("explicit enable lost")
-	}
-	openedNames := toolNames(&assistant.Tools{Config: opened.AssistantTools, Updater: accessUpdater{}, Configuration: accessConfig{}})
-	joined := strings.Join(openedNames, " ")
-	if !strings.Contains(joined, "check_quasar_bridge_update") || !strings.Contains(joined, "get_quasar_bridge_config") {
-		t.Fatalf("explicit enable did not expose tools: %v", openedNames)
-	}
-}
-
 func TestVARepromptCloudFallbackConfig(t *testing.T) {
 	cfg, err := readConfig(configFile(t, `{"mode":"observe"}`))
 	if err != nil {

@@ -171,7 +171,7 @@ func (n *Native) speakLocal(p *nativeRequest, rule, answer string) {
 func (n *Native) scheduleLocalListen(id, rule string, audio time.Duration) {
 	slack := time.Duration(n.LocalVoice.ListenSlackMS) * time.Millisecond
 	if slack == 0 {
-		slack = 600 * time.Millisecond
+		slack = 1000 * time.Millisecond
 	}
 	follow := time.Duration(n.LocalVoice.FollowupS) * time.Second
 	if follow == 0 {
@@ -194,24 +194,64 @@ func (n *Native) scheduleLocalListen(id, rule string, audio time.Duration) {
 		n.listenArmed = time.Now() // our opened mic is a follow-up: silence/stop/filler close it
 		n.lastAsked = false
 		n.mu.Unlock()
-		ctx, cancel := context.WithTimeout(n.ctx, 3*time.Second)
-		defer cancel()
-		err := n.LocalVoice.Listen(ctx)
+		n.openLocalListen(id, rule, 1)
+	})
+	n.localListen = t
+}
+
+// localListenRetries: the station sometimes ignores START_CONVERSATION while
+// it is still finishing the MP3 (t502, Миди). If no request arrives within
+// localListenCheck, ask again.
+const localListenRetries = 2
+
+var localListenCheck = 1500 * time.Millisecond
+
+func (n *Native) openLocalListen(id, rule string, attempt int) {
+	n.mu.Lock()
+	fired := time.Now()
+	n.localListenFired = fired
+	n.mu.Unlock()
+	ctx, cancel := context.WithTimeout(n.ctx, 3*time.Second)
+	err := n.LocalVoice.Listen(ctx)
+	cancel()
+	if err != nil {
+		slog.Warn("native_local_voice_listen", "request", requestTag(id), "ok", false, "attempt", attempt, "error", err.Error())
+	} else {
+		slog.Info("native_local_voice_listen", "request", requestTag(id), "ok", true, "attempt", attempt, "rule", rule)
+	}
+	if attempt > localListenRetries {
 		if err != nil {
 			n.mu.Lock()
 			n.localFollowRule = ""
 			n.mu.Unlock()
-			slog.Warn("native_local_voice_listen", "request", requestTag(id), "ok", false, "error", err.Error())
+		}
+		return
+	}
+	var t *time.Timer
+	n.mu.Lock()
+	t = time.AfterFunc(localListenCheck, func() {
+		n.mu.Lock()
+		if n.localListen != t || n.ctx.Err() != nil {
+			n.mu.Unlock()
 			return
 		}
-		slog.Info("native_local_voice_listen", "request", requestTag(id), "ok", true, "rule", rule)
+		n.localListen = nil
+		heard := n.lastRequestAt.After(fired)
+		n.mu.Unlock()
+		if heard {
+			return
+		}
+		slog.Info("native_local_voice_listen_retry", "request", requestTag(id), "attempt", attempt+1)
+		n.openLocalListen(id, rule, attempt+1)
 	})
 	n.localListen = t
+	n.mu.Unlock()
 }
 
 // takeLocalFollow is called under n.mu for every new request: it cancels a
 // pending listen and returns the rule for a voice follow-up opened by us.
 func (n *Native) takeLocalFollow(voice, tagged bool) string {
+	n.lastRequestAt = time.Now()
 	if n.localListen != nil {
 		n.localListen.Stop()
 		n.localListen = nil
