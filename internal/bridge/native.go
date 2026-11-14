@@ -746,7 +746,9 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				n.mu.Unlock()
 				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
 				stop := func() {}
-				if decision.Route != "yandex" && n.ProgressAfter > 0 {
+				// t503: no Alice filler inside a local-voice answer — its TTS raced the
+				// MP3 start and cut eugene's first words.
+				if decision.Route != "yandex" && n.ProgressAfter > 0 && !n.LocalVoice.Applies(decision.Rule) {
 					stop = n.progress(p)
 				}
 				rctx := p.ctx

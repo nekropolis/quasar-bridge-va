@@ -234,10 +234,10 @@ func TestLocalListenRetriesWhenStationIgnoresIt(t *testing.T) {
 		return nil
 	}}}
 	n.scheduleLocalListen("x", "dark_side_to_llm", time.Millisecond)
-	time.Sleep(600 * time.Millisecond) // nothing heard: 1 + 2 retries, then stop
+	time.Sleep(700 * time.Millisecond) // nothing heard: 1 + 3 retries, then stop
 	mu.Lock()
-	if calls != 3 {
-		t.Fatalf("listen calls=%d, want 3", calls)
+	if calls != 4 {
+		t.Fatalf("listen calls=%d, want 4", calls)
 	}
 	mu.Unlock()
 	// a request right after the first listen stops the retries

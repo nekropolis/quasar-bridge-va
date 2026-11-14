@@ -171,7 +171,7 @@ func (n *Native) speakLocal(p *nativeRequest, rule, answer string) {
 func (n *Native) scheduleLocalListen(id, rule string, audio time.Duration) {
 	slack := time.Duration(n.LocalVoice.ListenSlackMS) * time.Millisecond
 	if slack == 0 {
-		slack = 1000 * time.Millisecond
+		slack = 400 * time.Millisecond
 	}
 	follow := time.Duration(n.LocalVoice.FollowupS) * time.Second
 	if follow == 0 {
@@ -201,10 +201,10 @@ func (n *Native) scheduleLocalListen(id, rule string, audio time.Duration) {
 
 // localListenRetries: the station sometimes ignores START_CONVERSATION while
 // it is still finishing the MP3 (t502, Миди). If no request arrives within
-// localListenCheck, ask again.
-const localListenRetries = 2
+// localListenCheck (a granted listen shows up in ~30 ms), ask again.
+const localListenRetries = 3
 
-var localListenCheck = 1500 * time.Millisecond
+var localListenCheck = 700 * time.Millisecond
 
 func (n *Native) openLocalListen(id, rule string, attempt int) {
 	n.mu.Lock()
