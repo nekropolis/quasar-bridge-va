@@ -14,7 +14,7 @@ func TestLocalVoiceApplies(t *testing.T) {
 	if nilVoice.Applies("x") {
 		t.Fatal("nil must not apply")
 	}
-	v := &LocalVoice{Enabled: true, Rules: []string{"wakeword_ey_sistema_to_llm", "dark_side_to_llm"}, Synth: func(context.Context, string) (string, error) { return "", nil }}
+	v := &LocalVoice{Enabled: true, Rules: []string{"wakeword_ey_sistema_to_llm", "dark_side_to_llm"}, Synth: func(context.Context, string) (SynthResult, error) { return SynthResult{}, nil }}
 	for rule, want := range map[string]bool{"wakeword_ey_sistema_to_llm": true, "dark_side_to_llm": true, "force_to_llm": false, "": false} {
 		if v.Applies(rule) != want {
 			t.Errorf("%q: want %v", rule, want)
@@ -59,12 +59,12 @@ func TestHTTPSynth(t *testing.T) {
 			w.WriteHeader(401)
 			return
 		}
-		w.Write([]byte(`{"url":"http://192.168.0.151:8091/voice/abc.mp3"}`))
+		w.Write([]byte(`{"url":"http://192.168.0.151:8091/voice/abc.mp3","duration_ms":1500}`))
 	}))
 	defer srv.Close()
 	u, err := HTTPSynth(srv.URL, "k", 2*time.Second)(context.Background(), "текст")
-	if err != nil || !strings.HasSuffix(u, "/voice/abc.mp3") {
-		t.Fatalf("u=%q err=%v", u, err)
+	if err != nil || !strings.HasSuffix(u.URL, "/voice/abc.mp3") || u.Duration != 1500*time.Millisecond {
+		t.Fatalf("u=%+v err=%v", u, err)
 	}
 	if _, err := HTTPSynth(srv.URL, "wrong", 2*time.Second)(context.Background(), "текст"); err == nil {
 		t.Fatal("401 must fail")

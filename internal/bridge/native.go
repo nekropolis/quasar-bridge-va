@@ -51,6 +51,7 @@ type FallbackResolver interface {
 }
 
 type nativeRequest struct {
+	localFollowRule                 string // follow-up opened after a local-voice answer (patch 0003)
 	audioInput                      []byte
 	audioInputDone                  bool
 	inputWhisper                    bool
@@ -143,7 +144,12 @@ type Native struct {
 	Ellipsis *EllipsisFollowup
 	// LocalVoice speaks answers of selected rules with our TTS (patch 0003).
 	LocalVoice *LocalVoice
-	lastAnswer time.Time
+	// localListen/localFollow*: pending mic opening after a local-voice MP3
+	// and the rule kept for the follow-up it opens (patch 0003).
+	localListen      *time.Timer
+	localFollowRule  string
+	localFollowUntil time.Time
+	lastAnswer       time.Time
 	// Events records route, cloud and follow-up outcomes. Nil disables it.
 	Events *EventSink
 }
@@ -259,6 +265,8 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			p.prevAsked = n.lastAsked
 		}
 		n.listenArmed = time.Time{}
+		_, tagged := pctx.Value(wakewordTagKey{}).(string)
+		p.localFollowRule = n.takeLocalFollow(!p.isText, tagged)
 		if n.requests[id] != nil {
 			n.mu.Unlock()
 			cancel()
@@ -724,6 +732,9 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 					slog.Info("native_ellipsis_followup", "request", requestTag(p.id))
 				}
 				decision := routed.Decide(dctx, text)
+				if p.localFollowRule != "" && (decision.Source != "rule" || decision.Route == "llm") {
+					decision.Route, decision.Rule, decision.Source = "llm", p.localFollowRule, "local_voice_followup"
+				}
 				n.mu.Lock()
 				p.source = decision.Source
 				if strings.TrimSpace(text) != "" {
