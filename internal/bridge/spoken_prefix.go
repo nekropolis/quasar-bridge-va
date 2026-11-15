@@ -31,7 +31,14 @@ func trimSpokenPrefix(s, spoken string) (tail string, trimmed int, exact bool) {
 		return s[len(spoken):], len(spoken), true
 	}
 	n := commonPrefixLen(s, spoken)
-	for n > 0 && !utf8.RuneStart(s[n]) {
+	if n >= len(s) {
+		// Final answer is fully covered by the spoken stream (provider made it
+		// shorter): nothing left to say. Without this guard s[n] panics with
+		// "index out of range [len(s)] with length len(s)" — seen live on the
+		// station 15.11.2026 (streaming bridge restart mid-answer).
+		return "", n, false
+	}
+	for n > 0 && n < len(s) && !utf8.RuneStart(s[n]) {
 		n-- // never cut inside a multi-byte rune
 	}
 	for n > 0 {

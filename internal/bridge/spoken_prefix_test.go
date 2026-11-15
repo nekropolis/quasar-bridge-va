@@ -76,3 +76,12 @@ func TestTrimSpokenPrefixSingleWord(t *testing.T) {
 		t.Fatalf("single word: tail=%q n=%d exact=%v", tail, n, exact)
 	}
 }
+
+func TestTrimSpokenPrefixSpokenLongerThanFinal(t *testing.T) {
+	// Регресс 15.11.2026: финальный текст короче уже озвученных чанков —
+	// раньше s[n] при n == len(s) паниковал "index out of range [len] with length len".
+	tail, n, exact := trimSpokenPrefix("короткий финал", "короткий финал и ещё продолжение")
+	if tail != "" || n != len("короткий финал") || exact {
+		t.Fatalf("tail=%q n=%d exact=%v", tail, n, exact)
+	}
+}
