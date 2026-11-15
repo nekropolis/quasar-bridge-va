@@ -229,7 +229,9 @@ func (n *Native) cloudFallbackUnlock(p *nativeRequest, reason string) {
 		if filler != "" {
 			stop = n.progressAfter(p, 0)
 		}
-		result, err := resolver.Fallback(p.ctx, query)
+		// Use the fork's streaming fallback when llm_stream is on; plain
+		// Fallback otherwise.
+		result, err := n.resolveFallback(p, resolver, query)
 		stop()
 		if p.ctx.Err() != nil {
 			return
