@@ -17,3 +17,13 @@ func extraHeaders(ctx context.Context) [][2]string {
 	h, _ := ctx.Value(extraHeadersKey{}).([][2]string)
 	return h
 }
+
+// Header returns the value of an extra header set with WithHeader ("" if absent).
+func Header(ctx context.Context, name string) string {
+	for _, h := range extraHeaders(ctx) {
+		if h[0] == name {
+			return h[1]
+		}
+	}
+	return ""
+}
