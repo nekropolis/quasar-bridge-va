@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"strconv"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -103,6 +104,7 @@ type nativeRequest struct {
 	cloudLogged                     bool
 	cloudTimer                      *time.Timer
 	progressSpeech                  string
+	wakeAt                          time.Time // t511: start of this voice request (X-VA-Wake-At for the core)
 }
 
 // Short stop words inside the post-reply listen window close it quietly.
@@ -248,7 +250,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		playerState := nativePlaybackState(req)
 		pctx = sound.WithPlaybackState(pctx, playerState)
 		slog.Info("native_player_state", "request", requestTag(id), "present", playerState.Present, "player_state", playerState.PlayerState, "offset_known", playerState.OffsetKnown, "offset_ms", playerState.OffsetMS, "has_stream", playerState.StreamID != "", "stream_tag", requestTag(playerState.StreamID))
-		p := &nativeRequest{id: id, request: proto.Clone(req).(*request.TAliceRequestProto), text: req.GetRequest().GetEvent().GetText(), ctx: pctx, cancel: cancel}
+		p := &nativeRequest{id: id, request: proto.Clone(req).(*request.TAliceRequestProto), text: req.GetRequest().GetEvent().GetText(), ctx: pctx, cancel: cancel, wakeAt: time.Now()}
 		p.ctx = sound.WithPlayer(p.ctx, func(ctx context.Context, request sound.Request) error {
 			return n.queueSound(ctx, p, request)
 		})
@@ -752,8 +754,11 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 					stop = n.progress(p)
 				}
 				rctx := p.ctx
+				if !p.wakeAt.IsZero() {
+					rctx = llm.WithHeader(rctx, "X-VA-Wake-At", strconv.FormatInt(p.wakeAt.UnixMilli(), 10))
+				}
 				if n.LocalVoice.Applies(decision.Rule) {
-					rctx = llm.WithHeader(p.ctx, "X-VA-Voice", "male")
+					rctx = llm.WithHeader(rctx, "X-VA-Voice", "male")
 				}
 				result, err = routed.ResolveDecision(rctx, text, decision)
 				if err == nil && result.Route == "llm" && n.LocalVoice.Applies(decision.Rule) {
@@ -769,6 +774,27 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 		if errors.Is(err, context.Canceled) {
 			n.discardStale(p)
+			return
+		}
+		if errors.Is(err, llm.ErrSilent) {
+			// t511: the other speaker answers this utterance — close quietly, no error phrase
+			n.discardSound(p)
+			n.mu.Lock()
+			if p.canceled {
+				n.mu.Unlock()
+				return
+			}
+			p.local, p.silent, p.route = true, true, "silent"
+			n.mu.Unlock()
+			slog.Info("native_route", "request", requestTag(p.id), "route", "silent", "reason", "core_silent")
+			if p.gated && !p.streaming {
+				if err := n.sendCancel(p.ctx, p.id); err != nil {
+					return
+				}
+			}
+			if err := n.reply(p, Resolution{}); err != nil {
+				slog.Warn("native_reply_failed", "request", requestTag(p.id))
+			}
 			return
 		}
 		if err != nil {
