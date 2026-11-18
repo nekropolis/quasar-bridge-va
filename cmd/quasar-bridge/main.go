@@ -156,6 +156,8 @@ func main() {
 	}
 	var clientCount, serverCount atomic.Int64
 	subscriptions := new(bridge.SubscriptionMonitor)
+	spotter := new(bridge.SpotterLog) // t512: log-only multiactivation verdicts
+	go spotter.Run(ctx.Done())
 	proxy := &bridge.Proxy{Subscriptions: subscriptions, Upstream: cfg.Upstream, Observer: func(direction string, kind websocket.MessageType, data []byte) {
 		d := wire.ClientToServer
 		var count int64
@@ -166,6 +168,7 @@ func main() {
 			count = clientCount.Add(1)
 		}
 		frame := wire.Decode(data, d)
+		spotter.Observe(frame)
 		name := frame.Kind()
 		if (name != "opaque" && name != "AsrResult") || count <= 8 || count%100 == 0 {
 			attrs := []any{"direction", direction, "transport_type", int(kind), "event", name, "bytes", len(data), "count", count}
