@@ -310,7 +310,10 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	}
 	wakewordTag, _ := ctx.Value(wakewordTagKey{}).(string)
 	skip := skipRulesFrom(ctx)
-	if len(skip) > 0 {
+	if vaDialogFrom(ctx) {
+		skip = append(slices.Clone(skip), p.vaYandexRules()...) // t515
+	}
+	if len(skip) > 0 && !vaDialogFrom(ctx) {
 		if d, ok := p.match(text, wakewordTag); ok && slices.Contains(skip, d.Rule) {
 			slog.Info("routing_rule_skipped", "rule", d.Rule, "reason", "ellipsis_followup")
 		}

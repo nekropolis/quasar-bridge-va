@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -113,7 +114,17 @@ func TestNativeLocalVoiceListensAfterAudioAndKeepsRule(t *testing.T) {
 	]`), &cfg.Rules); err != nil {
 		t.Fatal(err)
 	}
-	e := &Engine{LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) { return "Да пребудет с тобой сила", nil })}
+	cfg.DefaultRoute = "classify"
+	// t515: in dialog mode the core classifier (X-VA-Dialog) decides: timer → Alice, else model.
+	e := &Engine{LLM: completionFunc(func(ctx context.Context, m []llm.Message, structured bool) (string, error) {
+		if !structured {
+			return "Да пребудет с тобой сила", nil
+		}
+		if llm.Header(ctx, "X-VA-Dialog") == "1" && !strings.Contains(m[len(m)-1].Content, "таймер") {
+			return `{"route":"llm"}`, nil
+		}
+		return `{"route":"yandex"}`, nil
+	})}
 	if err := e.SetRouting(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -172,13 +183,13 @@ func TestNativeLocalVoiceListensAfterAudioAndKeepsRule(t *testing.T) {
 	say("g1", "переходи на тёмную сторону")
 	want("g1", "llm")
 	waitListen()
-	say("f1", "какая погода") // default route yandex → kept on dark_side_to_llm
+	say("f1", "какая погода") // dialog mode: core says model → kept on dark_side_to_llm
 	want("f1", "llm")
-	waitListen() // answers of the follow-up keep the conversation open
+	waitListen()                          // answers of the follow-up keep the conversation open
 	say("f2", "а где стоп-кран в поезде") // «стоп» inside a question keeps the dialogue
 	want("f2", "llm")
 	waitListen()
-	say("f3", "поставь таймер") // explicit non-llm rule wins, no listen after it
+	say("f3", "поставь таймер") // t515: core classifier says command → Alice, no listen after it
 	want("f3", "yandex")
 	say("f4", "какая погода") // follow-up consumed once
 	want("f4", "yandex")

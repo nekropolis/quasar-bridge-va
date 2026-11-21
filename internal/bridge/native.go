@@ -53,6 +53,7 @@ type FallbackResolver interface {
 
 type nativeRequest struct {
 	localFollowRule                 string // follow-up opened after a local-voice answer (patch 0003)
+	spotter                         string // t515: cloud SpotterValidation verdict (ok/canceled/rejected)
 	audioInput                      []byte
 	audioInputDone                  bool
 	inputWhisper                    bool
@@ -641,6 +642,11 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		}
 	case "ServerRequestReady":
 		slog.Info("native_server_ready", "request", requestTag(p.id))
+	case "SpotterValidation":
+		p.spotter = spotterVerdict(e.GetSpotterValidation())
+		if p.started && p.spotterSilencedLocked() {
+			slog.Info("native_spotter_late", "request", requestTag(p.id), "verdict", p.spotter, "route", p.route)
+		}
 	case "AsrResult":
 		asr := e.GetAsrResult()
 		if !asr.GetEndOfUtt() {
@@ -723,6 +729,9 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		if n.closeFollowUp(p, text) {
 			return
 		}
+		if n.vaSpotterSilence(p) {
+			return
+		}
 		result := Resolution{Route: "yandex"}
 		var err error
 		if n.resolver != nil && strings.TrimSpace(text) != "" {
@@ -731,12 +740,15 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				afterAnswer := p.afterAnswer
 				n.mu.Unlock()
 				dctx := p.ctx
+				if p.localFollowRule != "" {
+					dctx = withVADialog(dctx) // t515: dialog mode — core decides command vs model
+				}
 				if afterAnswer && n.Ellipsis.IsEllipsis(text) {
 					dctx = WithSkipRules(p.ctx, n.Ellipsis.SkipRules)
 					slog.Info("native_ellipsis_followup", "request", requestTag(p.id))
 				}
 				decision := routed.Decide(dctx, text)
-				if p.localFollowRule != "" && (decision.Source != "rule" || decision.Route == "llm") {
+				if p.localFollowRule != "" && !vaDialogKeepsDecision(decision) {
 					decision.Route, decision.Rule, decision.Source = "llm", p.localFollowRule, "local_voice_followup"
 				}
 				n.mu.Lock()

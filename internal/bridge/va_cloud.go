@@ -202,6 +202,12 @@ func (n *Native) cloudFallbackUnlock(p *nativeRequest, reason string) {
 		n.mu.Unlock()
 		return
 	}
+	if p.spotterSilencedLocked() { // t515: cloud gave this utterance to another speaker
+		verdict := p.spotter
+		n.mu.Unlock()
+		slog.Info("native_cloud_fallback_skipped", "request", requestTag(p.id), "reason", reason, "verdict", verdict)
+		return
+	}
 	p.local = true
 	p.cloudAnswered = true
 	if p.cloudTimer != nil {
