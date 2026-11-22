@@ -310,7 +310,12 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 	}
 	wakewordTag, _ := ctx.Value(wakewordTagKey{}).(string)
 	skip := skipRulesFrom(ctx)
+	vaCore := false // t516: dialog mode, an «→ Alice» rule matched first → the core decides
 	if vaDialogFrom(ctx) {
+		if d, ok := p.matchSkip(text, wakewordTag, skip); ok && d.Route == "yandex" {
+			vaCore = true
+			slog.Info("routing_rule_skipped", "rule", d.Rule, "reason", "va_dialog_core_decides")
+		}
 		skip = append(slices.Clone(skip), p.vaYandexRules()...) // t515
 	}
 	if len(skip) > 0 && !vaDialogFrom(ctx) {
@@ -318,13 +323,15 @@ func (e *Engine) Decide(ctx context.Context, text string) (decision RouteDecisio
 			slog.Info("routing_rule_skipped", "rule", d.Rule, "reason", "ellipsis_followup")
 		}
 	}
-	if d, ok := p.matchSkip(text, wakewordTag, skip); ok {
-		if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
-			d.Route = "music"
+	if !vaCore {
+		if d, ok := p.matchSkip(text, wakewordTag, skip); ok {
+			if d.Route == "llm" && e.Music != nil && e.Music.CanStartMusic(text) {
+				d.Route = "music"
+			}
+			return d
 		}
-		return d
 	}
-	if len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
+	if !vaCore && len(snapshot.Messages) > 0 && dialogue.IsFollowup(text) {
 		return RouteDecision{Route: "llm", Source: "dialogue"}
 	}
 	if !p.classifierEnabled {
