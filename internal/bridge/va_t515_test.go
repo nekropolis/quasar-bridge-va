@@ -24,7 +24,9 @@ func TestT515DialogSkipsYandexRules(t *testing.T) {
 	cfg.DefaultRoute = "classify"
 	cfg.Rules = []RoutingRule{
 		{Name: "general_temp_to_yandex", Route: "yandex", Match: RoutingMatch{ContainsAny: []string{"температур"}}},
+		{Name: "tv_to_yandex", Route: "yandex", Match: RoutingMatch{ContainsAny: []string{"телевизор"}}},
 		{Name: "home_to_llm", Route: "llm", Match: RoutingMatch{ContainsAny: []string{"горячую воду"}}},
+		{Name: "home_devices", Route: "llm", Match: RoutingMatch{ContainsAny: []string{"включи"}}},
 	}
 	var mu sync.Mutex
 	var hdr []string
@@ -50,12 +52,15 @@ func TestT515DialogSkipsYandexRules(t *testing.T) {
 		t.Fatalf("llm rules still apply in dialog: %+v", d)
 	}
 	route = `{"route":"yandex"}`
+	if d := e.Decide(withVADialog(t.Context()), "включи телевизор"); d.Route != "yandex" || d.Source != "classifier" || !vaDialogKeepsDecision(d) {
+		t.Fatalf("t516: TV in dialog → core → Alice, not a later llm rule: %+v", d)
+	}
 	if d := e.Decide(withVADialog(t.Context()), "поставь таймер на пять минут"); d.Route != "yandex" || d.Source != "classifier" || !vaDialogKeepsDecision(d) {
 		t.Fatalf("core command → Alice: %+v", d)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(hdr) != 2 || hdr[0] != "1" || hdr[1] != "1" {
+	if len(hdr) != 3 || hdr[0] != "1" || hdr[1] != "1" || hdr[2] != "1" {
 		t.Fatalf("X-VA-Dialog headers=%q", hdr)
 	}
 }
