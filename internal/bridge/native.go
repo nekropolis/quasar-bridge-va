@@ -647,6 +647,20 @@ func (n *Native) server(ctx context.Context, k websocket.MessageType, data []byt
 			return nil
 		}
 	}
+	// t529 (#67): модерационный отказ иногда приходит не AliceResponse, а последним DeferredAliceResponse
+	// с пустым текстом и без директив. Раньше такой кадр уходил в колонку как «ответ», и локальный fallback
+	// не срабатывал. С cloud_gate кадр ещё можно заменить — уводим в локальную модель.
+	if d := e.GetDeferredAliceResponse(); d != nil && p.cloud && !p.ttsStarted && d.GetIsLast() {
+		base := d.GetBaseResponse()
+		empty := strings.TrimSpace(base.GetText()) == "" && len(base.GetDirectives()) == 0
+		allowed := n.CloudFallback == nil || (n.CloudFallback.OnRefusal && n.CloudFallback.allowed(p.text, p.source))
+		if empty && allowed {
+			if _, ok := n.resolver.(FallbackResolver); ok {
+				n.cloudFallbackUnlock(p, "deferred_refusal")
+				return nil
+			}
+		}
+	}
 	if p.cloud && !p.cloudLogged {
 		if r := e.GetAliceResponse(); r != nil {
 			p.cloudBytes += len(cloudResponseText(r))

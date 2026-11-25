@@ -536,3 +536,22 @@ func TestCloudGateLiveOutputCannotOvertakeReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDeferredRefusalFallsBack(t *testing.T) {
+	n, resolver, up, down := newCloudGateSession(t, "yandex")
+	if err := n.Client(t.Context(), websocket.MessageBinary, cloudGateInput("deferred-refusal", "вопрос")); err != nil {
+		t.Fatal(err)
+	}
+	nextCloudGate(t, up)
+	nextCloudGate(t, resolver.deciding)
+	// отказ приходит последним deferred-кадром без текста и директив, пока решение ещё не принято:
+	// cloud_gate его придерживает, а на replay (route=yandex) срабатывает локальный fallback
+	sendCloudGate(t, n, cloudGatePart("deferred-refusal", ""))
+	close(resolver.decision)
+	nextCloudGate(t, resolver.executing)
+	close(resolver.answer)
+	got := wire.Decode(nextCloudGate(t, down), wire.ServerToClient).Server.GetEvent().GetAliceResponse()
+	if got.GetVoiceResponse().GetOutputSpeech().GetText() != "Fallback answer" {
+		t.Fatalf("deferred refusal was not replaced by local fallback: %v", got)
+	}
+}
