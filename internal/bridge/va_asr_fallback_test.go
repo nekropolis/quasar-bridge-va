@@ -205,3 +205,18 @@ func TestEventExceptionStartsASRFallbackAndIsSuppressed(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer k" || r.Header.Get("X-VA-Chat") != "station:midi" {
+			http.Error(w, "no", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"url":"http://x/voice/stream/abc.mp3"}`))
+	}))
+	defer srv.Close()
+	url, err := HTTPStream(srv.URL, "station:midi", "k", 0)(context.Background(), []byte{0, 0})
+	if err != nil || url != "http://x/voice/stream/abc.mp3" {
+		t.Fatalf("url=%q err=%v", url, err)
+	}
+}

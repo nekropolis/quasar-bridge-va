@@ -54,6 +54,44 @@ func HTTPSTT(endpoint, apiKey string, timeout time.Duration) func(context.Contex
 	}
 }
 
+// HTTPStream posts PCM to the core and gets back a URL that streams the phrase
+// immediately and appends the model answer when ready (t535).
+func HTTPStream(endpoint, chat, apiKey string, timeout time.Duration) func(context.Context, []byte) (string, error) {
+	client := &http.Client{Timeout: timeout}
+	return func(ctx context.Context, pcm []byte) (string, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(pcm))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/octet-stream")
+		if chat != "" {
+			req.Header.Set("X-VA-Chat", chat)
+		}
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", errors.New("local stream transport failed")
+		}
+		defer resp.Body.Close()
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		if err != nil {
+			return "", err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return "", errors.New("local stream HTTP " + resp.Status)
+		}
+		var out struct {
+			URL string `json:"url"`
+		}
+		if json.Unmarshal(data, &out) != nil || strings.TrimSpace(out.URL) == "" {
+			return "", errors.New("local stream: no url")
+		}
+		return out.URL, nil
+	}
+}
+
 func pcmToS16(pcm []float32) []byte {
 	out := make([]byte, len(pcm)*2)
 	for i, v := range pcm {
@@ -156,8 +194,20 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 		n.fallbackAnswer(p, "", "Не расслышала, повтори, пожалуйста.")
 		return
 	}
+	s16 := pcmToS16(pcm)
+	if n.LocalVoice.Stream != nil {
+		sctx, scancel := context.WithTimeout(p.ctx, timeout)
+		url, serr := n.LocalVoice.Stream(sctx, s16)
+		scancel()
+		if serr == nil {
+			n.answerStream(p, url)
+			slog.Info("native_asr_fallback_stream", "request", requestTag(p.id), "ok", true, "audio_bytes", len(audio))
+			return
+		}
+		slog.Warn("native_asr_fallback_stream", "request", requestTag(p.id), "ok", false, "error", serr.Error())
+	}
 	ctx, cancel := context.WithTimeout(p.ctx, timeout)
-	text, err := n.LocalVoice.STT(ctx, pcmToS16(pcm))
+	text, err := n.LocalVoice.STT(ctx, s16)
 	cancel()
 	if err != nil {
 		slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "stt", "error", err.Error())
@@ -184,6 +234,14 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 	}
 	slog.Info("native_asr_fallback_llm", "request", requestTag(p.id), "ok", true, "route", result.Route, "chars", len([]rune(result.Answer)))
 	n.fallbackAnswer(p, text, result.Answer)
+}
+
+// answerStream queues one growing MP3 as the answer (the phrase is already playing).
+func (n *Native) answerStream(p *nativeRequest, url string) error {
+	if err := n.queueSound(p.ctx, p, soundURLRequest(url)); err != nil {
+		return err
+	}
+	return n.reply(p, Resolution{Route: "llm", Answer: ""})
 }
 
 // fallbackAnswer speaks text in eugene voice (local_voice TTS + audio_play).

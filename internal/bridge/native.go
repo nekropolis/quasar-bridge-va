@@ -364,6 +364,15 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		}
 		n.requests[id] = p
 		n.mu.Unlock()
+		// Отладочный стенд (по умолчанию выключен): форсирует ASR-fallback для живой проверки.
+		if os.Getenv("QUASAR_ASR_FORCE_FALLBACK") == "1" && !p.isText {
+			n.wg.Go(func() {
+				time.Sleep(600 * time.Millisecond)
+				if n.startASRFallback() {
+					slog.Info("native_asr_fallback_forced", "request", requestTag(p.id))
+				}
+			})
+		}
 		for _, ttsID := range vaStale {
 			_ = n.sendCancel(ctx, ttsID)
 		}

@@ -385,6 +385,13 @@ func main() {
 				}
 				lv.STT = bridge.HTTPSTT(lv.STTEndpoint, os.Getenv("QUASAR_LLM_API_KEY"), tmo)
 			}
+			if lv.StreamEndpoint != "" {
+				tmo := time.Duration(lv.FallbackTimeoutMS) * time.Millisecond
+				if tmo <= 0 {
+					tmo = 12 * time.Second
+				}
+				lv.Stream = bridge.HTTPStream(lv.StreamEndpoint, lv.StreamChat, os.Getenv("QUASAR_LLM_API_KEY"), tmo)
+			}
 			if lv.ListenURL != "" {
 				lv.Listen = bridge.HTTPListen(lv.ListenURL)
 			}

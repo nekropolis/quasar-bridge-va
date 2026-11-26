@@ -36,6 +36,9 @@ type LocalVoice struct {
 	STTEndpoint       string `json:"stt_endpoint,omitempty"`
 	FallbackPhrase    string `json:"fallback_phrase,omitempty"`
 	FallbackTimeoutMS int    `json:"fallback_timeout_ms,omitempty"`
+	// StreamEndpoint (t535): core отдаёт один MP3-поток — фраза сразу, ответ дописывается.
+	StreamEndpoint string `json:"stream_endpoint,omitempty"`
+	StreamChat     string `json:"stream_chat,omitempty"`
 
 	ListenURL     string `json:"listen_url,omitempty"`
 	ListenSlackMS int    `json:"listen_slack_ms,omitempty"`
@@ -48,6 +51,8 @@ type LocalVoice struct {
 	Listen func(ctx context.Context) error `json:"-"`
 	// STT recognizes PCM s16le 16 kHz. Set by main from STTEndpoint.
 	STT func(ctx context.Context, pcm []byte) (string, error) `json:"-"`
+	// Stream posts PCM s16le 16 kHz and returns a growing MP3 URL.
+	Stream func(ctx context.Context, pcm []byte) (string, error) `json:"-"`
 }
 
 // SynthResult is the playable answer and its length.
@@ -87,6 +92,12 @@ func (v LocalVoice) Validate() error {
 		u, err := url.Parse(v.STTEndpoint)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return errors.New("local_voice.stt_endpoint must be an http(s) URL")
+		}
+	}
+	if v.StreamEndpoint != "" {
+		u, err := url.Parse(v.StreamEndpoint)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return errors.New("local_voice.stream_endpoint must be an http(s) URL")
 		}
 	}
 	if v.FallbackTimeoutMS < 0 || v.FallbackTimeoutMS > 30000 {
