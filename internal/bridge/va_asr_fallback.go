@@ -191,7 +191,7 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 	pcm, err := decodeWhisperOpus(audio)
 	if err != nil {
 		slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "decode", "error", err.Error())
-		n.fallbackAnswer(p, "", "Не расслышала, повтори, пожалуйста.")
+		n.fallbackAnswer(p, "", "Не расслышал, повтори, пожалуйста.")
 		return
 	}
 	s16 := pcmToS16(pcm)
@@ -211,12 +211,12 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 	cancel()
 	if err != nil {
 		slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "stt", "error", err.Error())
-		n.fallbackAnswer(p, "", "Не расслышала, повтори, пожалуйста.")
+		n.fallbackAnswer(p, "", "Не расслышал, повтори, пожалуйста.")
 		return
 	}
 	if text == "" {
 		slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "empty")
-		n.fallbackAnswer(p, "", "Не расслышала, повтори, пожалуйста.")
+		n.fallbackAnswer(p, "", "Не расслышал, повтори, пожалуйста.")
 		return
 	}
 	slog.Info("native_asr_fallback_stt", "request", requestTag(p.id), "ok", true, "chars", len([]rune(text)))

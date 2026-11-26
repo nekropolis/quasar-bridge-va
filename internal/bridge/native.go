@@ -198,7 +198,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 	if f.Client == nil {
 		return n.up(ctx, k, data)
 	}
-	if sc := f.Client.GetStreamControl(); sc != nil { // конец речи: дальше аудио не копим
+	if sc := f.Client.GetStreamControl(); sc != nil && sc.GetClose() != nil { // конец речи: дальше аудио не копим
 		n.markAudioDone(sc.GetStreamId())
 	}
 	if f.Client.GetEvent() == nil {
