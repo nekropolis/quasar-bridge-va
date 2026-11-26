@@ -14,7 +14,8 @@ import (
 // Experimental acoustic heuristic calibrated on this speaker. No audio is
 // written to disk or sent to an additional service. Unknown input stays normal.
 func (n *Native) collectWhisperAudio(data []byte) {
-	if os.Getenv("QUASAR_AUTO_WHISPER") != "1" || len(data) < 4 {
+	// t532: аудио нужно и для локального ASR-fallback, не только для акустики.
+	if (os.Getenv("QUASAR_AUTO_WHISPER") != "1" && !n.asrFallbackEnabled()) || len(data) < 4 {
 		return
 	}
 	stream := int64(binary.BigEndian.Uint32(data[:4]))
@@ -36,6 +37,20 @@ func (n *Native) collectWhisperAudio(data []byte) {
 		}
 		p.audioInput = append(p.audioInput, data[4:]...)
 		return
+	}
+}
+
+// markAudioDone stops collecting audio once the client closed the input stream.
+func (n *Native) markAudioDone(streamID int64) {
+	if streamID == 0 {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, p := range n.requests {
+		if p.header != nil && p.header.GetStreamId() == streamID && !p.audioInputDone {
+			p.audioInputDone = true
+		}
 	}
 }
 

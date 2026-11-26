@@ -30,6 +30,13 @@ type LocalVoice struct {
 	// ListenURL (station-wakeword «POST /api/listen» on this bridge's speaker)
 	// opens the microphone after the MP3 has played, when the core allows
 	// listening. The next utterance within FollowupS stays on the same rule.
+	// STT (t532): локальное распознавание, когда ASR Яндекса ответил asr_init_error.
+	// STTEndpoint — core POST /v1/voice/stt (PCM s16le 16 кГц). FallbackPhrase
+	// произносится голосом eugene перед ответом модели.
+	STTEndpoint       string `json:"stt_endpoint,omitempty"`
+	FallbackPhrase    string `json:"fallback_phrase,omitempty"`
+	FallbackTimeoutMS int    `json:"fallback_timeout_ms,omitempty"`
+
 	ListenURL     string `json:"listen_url,omitempty"`
 	ListenSlackMS int    `json:"listen_slack_ms,omitempty"`
 	FollowupS     int    `json:"followup_s,omitempty"`
@@ -39,6 +46,8 @@ type LocalVoice struct {
 	Synth func(ctx context.Context, text string) (SynthResult, error) `json:"-"`
 	// Listen opens the speaker's microphone. Set by main from ListenURL.
 	Listen func(ctx context.Context) error `json:"-"`
+	// STT recognizes PCM s16le 16 kHz. Set by main from STTEndpoint.
+	STT func(ctx context.Context, pcm []byte) (string, error) `json:"-"`
 }
 
 // SynthResult is the playable answer and its length.
@@ -73,6 +82,15 @@ func (v LocalVoice) Validate() error {
 		if err != nil || u.Scheme != "http" || u.Hostname() == "" {
 			return errors.New("local_voice.listen_url must be an http URL")
 		}
+	}
+	if v.STTEndpoint != "" {
+		u, err := url.Parse(v.STTEndpoint)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return errors.New("local_voice.stt_endpoint must be an http(s) URL")
+		}
+	}
+	if v.FallbackTimeoutMS < 0 || v.FallbackTimeoutMS > 30000 {
+		return errors.New("local_voice.fallback_timeout_ms must be 0..30000")
 	}
 	if v.ListenSlackMS < 0 || v.ListenSlackMS > 5000 || v.FollowupS < 0 || v.FollowupS > 120 {
 		return errors.New("local_voice.listen_slack_ms must be 0..5000 and followup_s 0..120")

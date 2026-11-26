@@ -377,6 +377,14 @@ func main() {
 		if cfg.LocalVoice.Enabled {
 			lv := cfg.LocalVoice
 			lv.Synth = bridge.HTTPSynth(lv.Endpoint, os.Getenv("QUASAR_LLM_API_KEY"), time.Duration(lv.TimeoutMS)*time.Millisecond)
+			if lv.STTEndpoint != "" {
+				// t532: когда ASR Яндекса падает — распознаём локально.
+				tmo := time.Duration(lv.FallbackTimeoutMS) * time.Millisecond
+				if tmo <= 0 {
+					tmo = 12 * time.Second
+				}
+				lv.STT = bridge.HTTPSTT(lv.STTEndpoint, os.Getenv("QUASAR_LLM_API_KEY"), tmo)
+			}
 			if lv.ListenURL != "" {
 				lv.Listen = bridge.HTTPListen(lv.ListenURL)
 			}

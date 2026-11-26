@@ -1,7 +1,7 @@
 package bridge
 
 import (
-	"strconv"
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -13,6 +13,7 @@ import (
 	"quasarbridge/internal/llm"
 	"regexp"
 	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -57,6 +58,7 @@ type nativeRequest struct {
 	audioInput                      []byte
 	audioInputDone                  bool
 	inputWhisper                    bool
+	asrFallback                     bool // t532: Yandex ASR упал → локальный STT + наша LLM
 	afterAnswer                     bool
 	streaming                       bool
 	listenOnStreamStart             bool
@@ -192,7 +194,13 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		n.collectWhisperAudio(data)
 	}
 	f := wire.Decode(data, wire.ClientToServer)
-	if f.Client == nil || f.Client.GetEvent() == nil {
+	if f.Client == nil {
+		return n.up(ctx, k, data)
+	}
+	if sc := f.Client.GetStreamControl(); sc != nil { // конец речи: дальше аудио не копим
+		n.markAudioDone(sc.GetStreamId())
+	}
+	if f.Client.GetEvent() == nil {
 		return n.up(ctx, k, data)
 	}
 	e := f.Client.GetEvent()
@@ -455,6 +463,10 @@ func (n *Native) server(ctx context.Context, k websocket.MessageType, data []byt
 			raw = raw[:240]
 		}
 		slog.Warn("native_server_exception", "kind", f.Kind(), "raw", raw)
+	}
+	// t532: ASR Яндекса недоступен — распознаём локально и отвечаем нашей LLM голосом eugene.
+	if f.Kind() == "EventException" && n.asrFallbackEnabled() && bytes.Contains(data, []byte("asr_init_error")) && n.startASRFallback() {
+		return nil
 	}
 	if f.Server == nil {
 		if len(data) >= 4 {
