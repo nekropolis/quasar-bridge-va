@@ -11,8 +11,13 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	common "github.com/skrashevich/quasar-go-genproto/proto/alice/megamind/protos/common"
 	request "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
 	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	event_exception "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/event_exception"
+	stream "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/stream_control"
+	client "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
+	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"quasarbridge/internal/wire"
 )
 
@@ -144,5 +149,59 @@ func TestStartASRFallbackAnswersInLocalVoice(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no audio_play directive in %d frames", len(down))
+	}
+}
+
+func TestEventExceptionStartsASRFallbackAndIsSuppressed(t *testing.T) {
+	var down [][]byte
+	n := NewNative(context.Background(), func(context.Context, websocket.MessageType, []byte) error { return nil },
+		func(_ context.Context, _ websocket.MessageType, data []byte) error {
+			down = append(down, bytes.Clone(data))
+			return nil
+		}, fallbackResolver{})
+	t.Cleanup(n.Close)
+	var synth bool
+	n.LocalVoice = &LocalVoice{Enabled: true, Synth: func(context.Context, string) (SynthResult, error) {
+		synth = true
+		return SynthResult{URL: "http://x/a.mp3", Duration: time.Second}, nil
+	}, STT: func(context.Context, []byte) (string, error) { return "", nil }}
+
+	inner := &request.TAliceRequestProto{
+		Header:  &request.TAliceRequestProto_THeader{RequestId: new("app")},
+		Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Type: new(common.EEventType_voice_input)}},
+	}
+	tev := &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: "evt", StreamId: new(int64(1))}, Event: &client.TClientMessage_TEvent_VoiceInput{VoiceInput: inner}}
+	voice := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: tev}}
+	if err := n.Client(context.Background(), websocket.MessageBinary, aa(voice)); err != nil {
+		t.Fatal(err)
+	}
+	audio := binary.BigEndian.AppendUint32(nil, 1)
+	audio = append(audio, []byte("not-ogg")...)
+	if err := n.Client(context.Background(), websocket.MessageBinary, audio); err != nil {
+		t.Fatal(err)
+	}
+	end := &client.TClientMessage{Message: &client.TClientMessage_StreamControl{StreamControl: &stream.TStreamControl{
+		StreamId: 1, MessageId: "evt", Action: &stream.TStreamControl_Close{Close: &stream.TStreamControl_TActionClose{}}}}}
+	if err := n.Client(context.Background(), websocket.MessageBinary, aa(end)); err != nil {
+		t.Fatal(err)
+	}
+	exc := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{
+		Header: &header.TEventHeader{MessageId: "err", RefMessageId: "evt"},
+		Event: &server.TServerMessage_TEvent_EventException{EventException: &event_exception.TEventException{
+			Error: &event_exception.TEventException_TError{ErrorMessage: "asr_init_error: asr1_client: overloaded"}}}}}}
+	if err := n.Server(context.Background(), websocket.MessageBinary, aa(exc)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !synth && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !synth {
+		t.Fatal("fallback did not speak")
+	}
+	for _, raw := range down {
+		if bytes.Contains(raw, []byte("asr_init_error")) {
+			t.Fatal("Yandex ASR exception must not reach the speaker")
+		}
 	}
 }

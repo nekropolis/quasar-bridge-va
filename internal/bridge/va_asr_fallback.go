@@ -114,16 +114,21 @@ func (n *Native) startASRFallback() bool {
 	n.wg.Go(func() {
 		// Колонка продолжает отдавать звук ещё 2-4 с после asr_init_error: ждём
 		// конца реплики (StreamControl) или таймаута, иначе распознаем обрывок.
-		timer := time.NewTimer(6 * time.Second)
-		defer timer.Stop()
-		select {
-		case <-done:
-		case <-timer.C:
-		case <-p.ctx.Done():
-			return
+		n.mu.Lock()
+		already := p.audioInputDone
+		n.mu.Unlock()
+		if !already {
+			timer := time.NewTimer(6 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-done:
+			case <-timer.C:
+			case <-p.ctx.Done():
+				return
+			}
 		}
 		n.mu.Lock()
-		if p.audioInputDone && p.audioDone == done {
+		if p.audioDone == done {
 			close(done)
 			p.audioDone = nil
 		}
