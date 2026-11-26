@@ -363,7 +363,9 @@ func (n *Native) vaFinishLocalStream(p *nativeRequest, text string, listen bool)
 	n.vaPlayUntil.Store(time.Now().Add(dur + time.Second).UnixNano())
 	// t538: our stream never carries ShouldListen (the station lights up but sends
 	// nothing); continue the dialogue like the eugene dialogue does, via listen_url.
-	if listen && n.LocalVoice.Listen != nil && reply.ListeningAllowed(p.ctx) {
+	// t539: как speakLocal — после каждого настоящего ответа, va_listen ядра здесь
+	// не решает (он гасит только ShouldListen); выход — слова выхода/тишина.
+	if listen && n.LocalVoice.Listen != nil {
 		n.scheduleLocalListen(p.id, n.vaFollowRule(), dur)
 	}
 	slog.Info("native_local_stream", "request", requestTag(p.id), "stage", "answer", "ok", true, "stream", id, "pages", len(pages), "audio_ms", dur.Milliseconds())

@@ -85,7 +85,7 @@ func TestVAT538NotHeardDoesNotListen(t *testing.T) {
 	}
 }
 
-func TestVAT538ListenRespectsCore(t *testing.T) {
+func TestVAT539ListenDespiteCoreNoListen(t *testing.T) {
 	rec := &vaOpusRec{}
 	n, d := vaStreamNative(t, rec)
 	calls := vaListenCounter(n)
@@ -98,9 +98,10 @@ func TestVAT538ListenRespectsCore(t *testing.T) {
 	}
 	n.markAudioDone(1)
 	vaWait(t, "close", func() bool { return d.closed("nolisten") })
-	time.Sleep(700 * time.Millisecond)
-	if calls.Load() != 0 {
-		t.Fatal("core forbade listening (va_listen=false)")
+	// t539: like speakLocal, va_listen=false only drops ShouldListen; listen_url still opens.
+	vaWait(t, "listen_url despite va_listen=false", func() bool { return calls.Load() > 0 })
+	if vaLastPartListens(t, d.snapshot()) {
+		t.Fatal("ShouldListen must stay false")
 	}
 }
 

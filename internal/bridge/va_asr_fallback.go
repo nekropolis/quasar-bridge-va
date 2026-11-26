@@ -137,7 +137,10 @@ func (n *Native) vaForceFallback(p *nativeRequest, reason string) bool {
 	if !n.asrFallbackEnabled() || !n.vaStartASRFallback(p, reason == "eou") {
 		return false
 	}
-	slog.Info("native_asr_fallback_forced", "request", requestTag(p.id), "reason", reason)
+	n.mu.Lock()
+	yandex := len([]rune(strings.TrimSpace(p.text)))
+	n.mu.Unlock()
+	slog.Info("native_asr_fallback_forced", "request", requestTag(p.id), "reason", reason, "yandex_chars", yandex)
 	return true
 }
 
@@ -238,22 +241,7 @@ func (n *Native) vaWaitSpeechEnd(p *nativeRequest, done <-chan struct{}) string 
 // vaSpeechEnded: there was speech (a run of loud 20 ms frames) and the last
 // vaASRSilence is quiet. Thresholds follow the noise floor of this recording.
 func vaSpeechEnded(pcm []float32, rate int) bool {
-	frame := rate / 50
-	if frame == 0 || len(pcm) < frame {
-		return false
-	}
-	rms := make([]float64, 0, len(pcm)/frame)
-	floor := math.Inf(1)
-	for i := 0; i+frame <= len(pcm); i += frame {
-		var e float64
-		for _, v := range pcm[i : i+frame] {
-			e += float64(v) * float64(v)
-		}
-		r := math.Sqrt(e / float64(frame))
-		rms = append(rms, r)
-		floor = min(floor, r)
-	}
-	loud := max(0.02, 4*floor)
+	rms, floor := vaFrameRMS(pcm, rate)
 	quiet := max(0.008, 2*floor)
 	tail := int(vaASRSilence / (20 * time.Millisecond))
 	need := int(vaSpeechMinRun / (20 * time.Millisecond))
@@ -265,8 +253,30 @@ func vaSpeechEnded(pcm []float32, rate int) bool {
 			return false
 		}
 	}
+	return vaLoudRun(rms[:len(rms)-tail], max(0.02, 4*floor), need)
+}
+
+func vaFrameRMS(pcm []float32, rate int) (rms []float64, floor float64) {
+	frame := rate / 50
+	floor = math.Inf(1)
+	if frame == 0 {
+		return nil, floor
+	}
+	for i := 0; i+frame <= len(pcm); i += frame {
+		var e float64
+		for _, v := range pcm[i : i+frame] {
+			e += float64(v) * float64(v)
+		}
+		r := math.Sqrt(e / float64(frame))
+		rms = append(rms, r)
+		floor = min(floor, r)
+	}
+	return rms, floor
+}
+
+func vaLoudRun(rms []float64, loud float64, need int) bool {
 	run := 0
-	for _, r := range rms[:len(rms)-tail] {
+	for _, r := range rms {
 		if r >= loud {
 			run++
 			if run >= need {
@@ -279,6 +289,15 @@ func vaSpeechEnded(pcm []float32, rate int) bool {
 	return false
 }
 
+// vaSpeechCheck decides whether an empty STT result deserves a retry (tests replace it).
+var vaSpeechCheck = vaHasSpeech
+
+// vaHasSpeech: the recording holds at least vaSpeechMinRun of speech.
+func vaHasSpeech(pcm []float32, rate int) bool {
+	rms, floor := vaFrameRMS(pcm, rate)
+	return vaLoudRun(rms, max(0.02, 4*floor), int(vaSpeechMinRun/(20*time.Millisecond)))
+}
+
 func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 	if n.LocalVoice == nil || n.LocalVoice.STT == nil {
 		return
@@ -287,42 +306,18 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 	if timeout <= 0 {
 		timeout = 12 * time.Second
 	}
-	// t537: сразу открываем один поток речи и говорим фразу голосом eugene, ответ
-	// модели допишется в тот же поток. Нет Opus — прежний путь одним MP3.
-	streamed := false
-	if n.localOpusEnabled() {
-		started, err := n.vaStartLocalStream(p, n.vaFallbackPhrase())
-		switch {
-		case started && err != nil:
-			slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "phrase", "error", err.Error())
-			p.cancel()
-			return
-		case started:
-			streamed = true
-		default:
-			slog.Warn("native_local_stream", "request", requestTag(p.id), "stage", "phrase", "ok", false, "fallback", "mp3", "error", err.Error())
-		}
-	}
-	say := func(heard, answer string) {
-		if !streamed {
-			n.fallbackAnswer(p, heard, answer)
-			return
-		}
-		if strings.TrimSpace(answer) == "" {
-			answer = vaNoAnswer
-		}
-		// t538: микрофон — только после настоящего ответа модели, не на «Не расслышал».
-		n.vaFinishLocalStream(p, answer, heard != "" && answer != vaNoAnswer && answer != vaNotHeard)
-		slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", true, "heard_chars", len([]rune(heard)), "answer_chars", len([]rune(answer)), "voice", "local_stream")
-	}
+	// t539: сначала распознаём (≈0,4 с), потом открываем поток речи: на слова
+	// выхода («стоп», «хватит») колонка закрывается молча, без фразы.
+	heard, sttErr := "", error(nil)
 	pcm, err := decodeWhisperOpus(audio)
 	if err != nil {
 		slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "decode", "error", err.Error())
-		say("", vaNotHeard)
-		return
 	}
-	s16 := pcmToS16(pcm)
-	if !streamed && n.LocalVoice.Stream != nil {
+	var s16 []byte
+	if err == nil {
+		s16 = pcmToS16(pcm)
+	}
+	if err == nil && !n.localOpusEnabled() && n.LocalVoice.Stream != nil {
 		sctx, scancel := context.WithTimeout(p.ctx, timeout)
 		url, serr := n.LocalVoice.Stream(sctx, s16)
 		scancel()
@@ -333,34 +328,90 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 		}
 		slog.Warn("native_asr_fallback_stream", "request", requestTag(p.id), "ok", false, "error", serr.Error())
 	}
-	ctx, cancel := context.WithTimeout(p.ctx, timeout)
-	text, err := n.LocalVoice.STT(ctx, s16)
-	cancel()
-	if err != nil {
-		slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "stt", "error", err.Error())
-		say("", vaNotHeard)
+	if err == nil {
+		for attempt := 1; attempt <= 2; attempt++ {
+			ctx, cancel := context.WithTimeout(p.ctx, timeout)
+			heard, sttErr = n.LocalVoice.STT(ctx, s16)
+			cancel()
+			// Whisper sometimes returns nothing on clear speech (t538, 22:53): one retry.
+			if sttErr != nil || heard != "" || attempt == 2 || !vaSpeechCheck(pcm, 16000) || p.ctx.Err() != nil {
+				break
+			}
+			slog.Info("native_asr_fallback", "request", requestTag(p.id), "stage", "stt_retry")
+		}
+		if sttErr != nil {
+			slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "stt", "error", sttErr.Error())
+			heard = ""
+		}
+	}
+	if p.ctx.Err() != nil {
 		return
 	}
-	if text == "" || vaWakeOnly(text) {
-		slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "empty", "wake_only", text != "")
-		say("", vaNotHeard)
+	if heard != "" && vaIsLocalExit(heard) {
+		n.vaSilentClose(p, heard)
 		return
 	}
-	slog.Info("native_asr_fallback_stt", "request", requestTag(p.id), "ok", true, "chars", len([]rune(text)))
+	// One speech stream: phrase now, the answer is appended. Without Opus — one MP3.
+	streamed := false
+	if n.localOpusEnabled() {
+		started, serr := n.vaStartLocalStream(p, n.vaFallbackPhrase())
+		switch {
+		case started && serr != nil:
+			slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "phrase", "error", serr.Error())
+			p.cancel()
+			return
+		case started:
+			streamed = true
+		default:
+			slog.Warn("native_local_stream", "request", requestTag(p.id), "stage", "phrase", "ok", false, "fallback", "mp3", "error", serr.Error())
+		}
+	}
+	say := func(answer string, listen bool) {
+		if !streamed {
+			n.fallbackAnswer(p, heard, answer)
+			return
+		}
+		n.vaFinishLocalStream(p, answer, listen)
+		slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", true, "heard_chars", len([]rune(heard)), "answer_chars", len([]rune(answer)), "voice", "local_stream", "listen", listen)
+	}
+	if heard == "" || vaWakeOnly(heard) {
+		slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "empty", "wake_only", heard != "")
+		say(vaNotHeard, false)
+		return
+	}
+	slog.Info("native_asr_fallback_stt", "request", requestTag(p.id), "ok", true, "chars", len([]rune(heard)))
 	resolver, ok := n.resolver.(FallbackResolver)
 	if !ok {
-		say(text, "")
+		say(vaNoAnswer, false)
 		return
 	}
 	lctx := llm.WithHeader(p.ctx, "X-VA-Voice", "male")
-	result, err := resolver.Fallback(lctx, text)
+	result, err := resolver.Fallback(lctx, heard)
 	if err != nil || strings.TrimSpace(result.Answer) == "" {
 		slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "llm")
-		say(text, vaNoAnswer)
+		say(vaNoAnswer, false)
 		return
 	}
 	slog.Info("native_asr_fallback_llm", "request", requestTag(p.id), "ok", true, "route", result.Route, "chars", len([]rune(result.Answer)))
-	say(text, result.Answer)
+	say(result.Answer, true)
+}
+
+// vaSilentClose (t539) ends the request without speech, like a stop word in the
+// eugene dialogue (closeFollowUp): no phrase, no answer, no microphone.
+func (n *Native) vaSilentClose(p *nativeRequest, heard string) {
+	n.mu.Lock()
+	p.silent = true
+	p.route = "silent"
+	n.localFollowRule = ""
+	if n.localListen != nil {
+		n.localListen.Stop()
+		n.localListen = nil
+	}
+	n.mu.Unlock()
+	slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", true, "stage", "exit", "heard_chars", len([]rune(heard)))
+	if err := n.reply(p, Resolution{}); err != nil {
+		slog.Warn("native_reply_failed", "request", requestTag(p.id))
+	}
 }
 
 // answerStream queues one growing MP3 as the answer (the phrase is already playing).

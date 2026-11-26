@@ -259,12 +259,8 @@ func TestVAASRFallbackStreamsPhraseSilenceAnswer(t *testing.T) {
 	rec := &vaOpusRec{}
 	n, d := vaStreamNative(t, rec)
 	p := vaVoiceRequest(n, "asr")
-	p.audioInput = vaTestOpus(9, 3) // decodes to silence, STT stub answers
-	slowSTT := n.LocalVoice.STT
-	n.LocalVoice.STT = func(ctx context.Context, pcm []byte) (string, error) {
-		time.Sleep(350 * time.Millisecond) // the model "thinks": silence must fill the gap
-		return slowSTT(ctx, pcm)
-	}
+	p.audioInput = vaTestOpus(9, 3)                     // decodes to silence, STT stub answers
+	n.resolver = vaSlowResolver{350 * time.Millisecond} // the model "thinks": silence must fill the gap
 	if !n.startASRFallback() {
 		t.Fatal("fallback not started")
 	}
@@ -443,4 +439,15 @@ func TestVALocalVoiceValidatesOpusEndpoint(t *testing.T) {
 	if err := v.Validate(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type vaSlowResolver struct{ d time.Duration }
+
+func (vaSlowResolver) Resolve(context.Context, string) (Resolution, error) {
+	return Resolution{Route: "yandex"}, nil
+}
+
+func (r vaSlowResolver) Fallback(context.Context, string) (Resolution, error) {
+	time.Sleep(r.d)
+	return Resolution{Route: "llm", Answer: "Ответ после отказа"}, nil
 }

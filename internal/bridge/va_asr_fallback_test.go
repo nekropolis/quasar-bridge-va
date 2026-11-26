@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,15 +94,15 @@ func TestASRFallbackPicksVoiceRequest(t *testing.T) {
 }
 
 func TestStartASRFallbackAnswersInLocalVoice(t *testing.T) {
-	var down [][]byte
-	n := NewNative(context.Background(), func(context.Context, websocket.MessageType, []byte) error { return nil },
-		func(_ context.Context, _ websocket.MessageType, data []byte) error {
-			down = append(down, bytes.Clone(data))
-			return nil
-		}, fallbackResolver{})
+	dd := &vaDown{}
+	n := NewNative(context.Background(), func(context.Context, websocket.MessageType, []byte) error { return nil }, dd.send, fallbackResolver{})
 	t.Cleanup(n.Close)
+	var synthMu sync.Mutex
 	var synths []string
+	got := func() []string { synthMu.Lock(); defer synthMu.Unlock(); return append([]string(nil), synths...) }
 	n.LocalVoice = &LocalVoice{Enabled: true, Synth: func(_ context.Context, text string) (SynthResult, error) {
+		synthMu.Lock()
+		defer synthMu.Unlock()
 		synths = append(synths, text)
 		return SynthResult{URL: "http://x/a.mp3", Duration: time.Second}, nil
 	}, STT: func(context.Context, []byte) (string, error) { return "", nil }, FallbackPhrase: "На связи тёмная сторона."}
@@ -124,14 +126,14 @@ func TestStartASRFallbackAnswersInLocalVoice(t *testing.T) {
 	// Колонка закончила реплику: дальше fallback не ждёт.
 	n.markAudioDone(1)
 	deadline := time.Now().Add(3 * time.Second)
-	for len(synths) == 0 && time.Now().Before(deadline) {
+	for len(got()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(synths) != 1 || !strings.HasPrefix(synths[0], "На связи тёмная сторона.") {
-		t.Fatalf("synths=%q", synths)
+	if s := got(); len(s) != 1 || !strings.HasPrefix(s[0], "На связи тёмная сторона.") {
+		t.Fatalf("synths=%q", s)
 	}
 	var found bool
-	for _, raw := range down {
+	for _, raw := range dd.snapshot() {
 		f := wire.Decode(raw, wire.ServerToClient)
 		if f.Server == nil {
 			continue
@@ -148,21 +150,17 @@ func TestStartASRFallbackAnswersInLocalVoice(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("no audio_play directive in %d frames", len(down))
+		t.Fatalf("no audio_play directive in %d frames", len(dd.snapshot()))
 	}
 }
 
 func TestEventExceptionStartsASRFallbackAndIsSuppressed(t *testing.T) {
-	var down [][]byte
-	n := NewNative(context.Background(), func(context.Context, websocket.MessageType, []byte) error { return nil },
-		func(_ context.Context, _ websocket.MessageType, data []byte) error {
-			down = append(down, bytes.Clone(data))
-			return nil
-		}, fallbackResolver{})
+	dd := &vaDown{}
+	n := NewNative(context.Background(), func(context.Context, websocket.MessageType, []byte) error { return nil }, dd.send, fallbackResolver{})
 	t.Cleanup(n.Close)
-	var synth bool
+	var synth atomic.Bool
 	n.LocalVoice = &LocalVoice{Enabled: true, Synth: func(context.Context, string) (SynthResult, error) {
-		synth = true
+		synth.Store(true)
 		return SynthResult{URL: "http://x/a.mp3", Duration: time.Second}, nil
 	}, STT: func(context.Context, []byte) (string, error) { return "", nil }}
 
@@ -193,13 +191,13 @@ func TestEventExceptionStartsASRFallbackAndIsSuppressed(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
-	for !synth && time.Now().Before(deadline) {
+	for !synth.Load() && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !synth {
+	if !synth.Load() {
 		t.Fatal("fallback did not speak")
 	}
-	for _, raw := range down {
+	for _, raw := range dd.snapshot() {
 		if bytes.Contains(raw, []byte("asr_init_error")) {
 			t.Fatal("Yandex ASR exception must not reach the speaker")
 		}
