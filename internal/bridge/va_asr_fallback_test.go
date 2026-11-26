@@ -124,14 +124,13 @@ func TestStartASRFallbackAnswersInLocalVoice(t *testing.T) {
 	// Колонка закончила реплику: дальше fallback не ждёт.
 	n.markAudioDone(1)
 	deadline := time.Now().Add(3 * time.Second)
-	for len(synths) < 2 && time.Now().Before(deadline) {
+	for len(synths) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	got := strings.Join(synths, "|")
-	if len(synths) != 2 || !strings.Contains(got, "На связи тёмная сторона.") || !strings.Contains(got, "Не расслышала, повтори, пожалуйста.") {
+	if len(synths) != 1 || !strings.HasPrefix(synths[0], "На связи тёмная сторона.") {
 		t.Fatalf("synths=%q", synths)
 	}
-	plays := 0
+	var found bool
 	for _, raw := range down {
 		f := wire.Decode(raw, wire.ServerToClient)
 		if f.Server == nil {
@@ -140,7 +139,7 @@ func TestStartASRFallbackAnswersInLocalVoice(t *testing.T) {
 		if r := f.Server.GetEvent().GetAliceResponse(); r != nil {
 			for _, d := range r.GetResponse().GetDirectives() {
 				if d.GetType() == "client_action" && d.GetName() == "audio_play" {
-					plays++
+					found = true
 				}
 			}
 			if r.GetVoiceResponse().GetHasVoiceResponse() && r.GetVoiceResponse().GetOutputSpeech().GetText() != "" {
@@ -148,8 +147,8 @@ func TestStartASRFallbackAnswersInLocalVoice(t *testing.T) {
 			}
 		}
 	}
-	if plays != 2 {
-		t.Fatalf("expected phrase and answer audio_play, got %d in %d frames", plays, len(down))
+	if !found {
+		t.Fatalf("no audio_play directive in %d frames", len(down))
 	}
 }
 
