@@ -241,7 +241,8 @@ func (n *Native) answerStream(p *nativeRequest, url string) error {
 	if err := n.queueSound(p.ctx, p, soundURLRequest(url)); err != nil {
 		return err
 	}
-	return n.reply(p, Resolution{Route: "llm", Answer: ""})
+	// Непустой текст: станция иначе считает ответ пустым и не играет директиву.
+	return n.reply(p, Resolution{Route: "llm", Answer: "Ответ голосом."})
 }
 
 // fallbackAnswer speaks text in eugene voice (local_voice TTS + audio_play).
