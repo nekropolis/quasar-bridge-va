@@ -448,6 +448,14 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 
 func (n *Native) server(ctx context.Context, k websocket.MessageType, data []byte) error {
 	f := wire.Decode(data, wire.ServerToClient)
+	// t531: диагностика — чем именно Yandex отказывает (ASR/сессия), иначе в логах только размер кадра
+	if f.Kind() == "EventException" || f.Kind() == "Error" || f.Kind() == "GoAway" {
+		raw := string(data)
+		if len(raw) > 240 {
+			raw = raw[:240]
+		}
+		slog.Warn("native_server_exception", "kind", f.Kind(), "raw", raw)
+	}
 	if f.Server == nil {
 		if len(data) >= 4 {
 			n.mu.Lock()
