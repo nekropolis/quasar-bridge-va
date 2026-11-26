@@ -54,6 +54,8 @@ type FallbackResolver interface {
 
 type nativeRequest struct {
 	localFollowRule                 string // follow-up opened after a local-voice answer (patch 0003)
+	vaLocalStream                   bool   // t538: our Opus stream — never ShouldListen, the mic opens via listen_url
+	vaForce                         bool   // t538: QUASAR_ASR_FORCE_FALLBACK — local answer after Yandex end of speech
 	spotter                         string // t515: cloud SpotterValidation verdict (ok/canceled/rejected)
 	audioInput                      []byte
 	audioInputDone                  bool
@@ -380,11 +382,19 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		n.requests[id] = p
 		n.mu.Unlock()
 		// Отладочный стенд (по умолчанию выключен): форсирует ASR-fallback для живой проверки.
+		// t538: не отменяем Яндекс до фразы — ждём его конца речи (AsrResult EndOfUtt),
+		// тогда звук уже полный; без EOU — страховка vaForceMaxWait.
 		if os.Getenv("QUASAR_ASR_FORCE_FALLBACK") == "1" && !p.isText {
+			n.mu.Lock()
+			p.vaForce = true
+			n.mu.Unlock()
 			n.wg.Go(func() {
-				time.Sleep(600 * time.Millisecond)
-				if n.startASRFallback() {
-					slog.Info("native_asr_fallback_forced", "request", requestTag(p.id))
+				t := time.NewTimer(vaForceMaxWait)
+				defer t.Stop()
+				select {
+				case <-t.C:
+					n.vaForceFallback(p, "no_eou")
+				case <-p.ctx.Done():
 				}
 			})
 		}
@@ -729,7 +739,7 @@ func (n *Native) server(ctx context.Context, k websocket.MessageType, data []byt
 			}
 		}
 	}
-	emptyFinal := false
+	emptyFinal, forced := false, false
 	switch f.Kind() {
 	case "ServerRequestReady":
 		slog.Info("native_server_ready", "request", requestTag(p.id))
@@ -768,9 +778,13 @@ func (n *Native) server(ctx context.Context, k websocket.MessageType, data []byt
 			}
 		}
 		emptyFinal = !p.started && asr.GetEndOfUtt() && asr.GetResponseCode() == asrcommon.EAsrResponseCode_OK && strings.TrimSpace(p.text) == ""
+		forced = p.vaForce && !p.started && asr.GetEndOfUtt()
 
 	}
 	n.mu.Unlock()
+	if forced && n.vaForceFallback(p, "eou") {
+		return n.down(ctx, k, data) // the station still needs Yandex's end of speech
+	}
 	if emptyFinal {
 		if listener, ok := n.resolver.(interface{ EmptyInput(context.Context) }); ok {
 			listener.EmptyInput(p.ctx)

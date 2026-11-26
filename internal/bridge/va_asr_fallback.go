@@ -129,9 +129,26 @@ func (n *Native) asrFallbackRequestLocked() *nativeRequest {
 
 // startASRFallback handles an ASR rejection: the audio already collected for the
 // request is recognized locally and answered by the local model in eugene voice.
-func (n *Native) startASRFallback() bool {
+func (n *Native) startASRFallback() bool { return n.vaStartASRFallback(nil, false) }
+
+// vaForceFallback (t538, QUASAR_ASR_FORCE_FALLBACK): answer p locally once Yandex
+// has found the end of speech; the audio is complete then, no waiting.
+func (n *Native) vaForceFallback(p *nativeRequest, reason string) bool {
+	if !n.asrFallbackEnabled() || !n.vaStartASRFallback(p, reason == "eou") {
+		return false
+	}
+	slog.Info("native_asr_fallback_forced", "request", requestTag(p.id), "reason", reason)
+	return true
+}
+
+func (n *Native) vaStartASRFallback(target *nativeRequest, complete bool) bool {
 	n.mu.Lock()
-	p := n.asrFallbackRequestLocked()
+	p := target
+	if p == nil {
+		p = n.asrFallbackRequestLocked()
+	} else if p.canceled || p.started || p.ctx.Err() != nil || len(p.audioInput) == 0 {
+		p = nil
+	}
 	if p == nil || p.asrFallback {
 		n.mu.Unlock()
 		return false
@@ -139,6 +156,9 @@ func (n *Native) startASRFallback() bool {
 	p.asrFallback = true
 	p.started = true
 	p.local = true
+	if complete {
+		p.audioInputDone = true
+	}
 	done := make(chan struct{})
 	p.audioDone = done
 	if p.cloudTimer != nil {
@@ -153,18 +173,15 @@ func (n *Native) startASRFallback() bool {
 	}
 	n.wg.Go(func() {
 		defer n.vaLocalBusy.Add(-1)
-		// Колонка продолжает отдавать звук ещё 2-4 с после asr_init_error: ждём
-		// конца реплики (StreamControl) или таймаута, иначе распознаем обрывок.
+		// Колонка продолжает отдавать звук и после отказа Яндекса: ждём конца
+		// реплики (StreamControl), локальной тишины после речи или потолка.
 		n.mu.Lock()
 		already := p.audioInputDone
 		n.mu.Unlock()
+		reason := "complete"
 		if !already {
-			timer := time.NewTimer(6 * time.Second)
-			defer timer.Stop()
-			select {
-			case <-done:
-			case <-timer.C:
-			case <-p.ctx.Done():
+			reason = n.vaWaitSpeechEnd(p, done)
+			if reason == "" {
 				return
 			}
 		}
@@ -177,10 +194,89 @@ func (n *Native) startASRFallback() bool {
 		p.audioInput = nil
 		p.audioInputDone = true
 		n.mu.Unlock()
-		slog.Info("native_asr_fallback", "request", requestTag(p.id), "stage", "stt", "audio_bytes", len(audio))
+		slog.Info("native_asr_fallback", "request", requestTag(p.id), "stage", "stt", "audio_bytes", len(audio), "end", reason)
 		n.runASRFallback(p, audio)
 	})
 	return true
+}
+
+// t538: потолок ожидания конца реплики и локальная тишина после речи.
+var (
+	vaASRWaitCap   = 3 * time.Second
+	vaASRSilence   = 800 * time.Millisecond
+	vaASRPoll      = 150 * time.Millisecond
+	vaForceMaxWait = 8 * time.Second
+	vaSpeechMinRun = 100 * time.Millisecond
+)
+
+// vaWaitSpeechEnd returns why the utterance is over ("stream", "silence", "cap"),
+// or "" if the request ended.
+func (n *Native) vaWaitSpeechEnd(p *nativeRequest, done <-chan struct{}) string {
+	limit := time.NewTimer(vaASRWaitCap)
+	defer limit.Stop()
+	tick := time.NewTicker(vaASRPoll)
+	defer tick.Stop()
+	for {
+		select {
+		case <-done:
+			return "stream"
+		case <-limit.C:
+			return "cap"
+		case <-p.ctx.Done():
+			return ""
+		case <-tick.C:
+			n.mu.Lock()
+			audio := bytes.Clone(p.audioInput)
+			n.mu.Unlock()
+			if pcm, err := decodeWhisperOpus(audio); err == nil && vaSpeechEnded(pcm, 16000) {
+				return "silence"
+			}
+		}
+	}
+}
+
+// vaSpeechEnded: there was speech (a run of loud 20 ms frames) and the last
+// vaASRSilence is quiet. Thresholds follow the noise floor of this recording.
+func vaSpeechEnded(pcm []float32, rate int) bool {
+	frame := rate / 50
+	if frame == 0 || len(pcm) < frame {
+		return false
+	}
+	rms := make([]float64, 0, len(pcm)/frame)
+	floor := math.Inf(1)
+	for i := 0; i+frame <= len(pcm); i += frame {
+		var e float64
+		for _, v := range pcm[i : i+frame] {
+			e += float64(v) * float64(v)
+		}
+		r := math.Sqrt(e / float64(frame))
+		rms = append(rms, r)
+		floor = min(floor, r)
+	}
+	loud := max(0.02, 4*floor)
+	quiet := max(0.008, 2*floor)
+	tail := int(vaASRSilence / (20 * time.Millisecond))
+	need := int(vaSpeechMinRun / (20 * time.Millisecond))
+	if len(rms) < tail+need {
+		return false
+	}
+	for _, r := range rms[len(rms)-tail:] {
+		if r >= quiet {
+			return false
+		}
+	}
+	run := 0
+	for _, r := range rms[:len(rms)-tail] {
+		if r >= loud {
+			run++
+			if run >= need {
+				return true
+			}
+		} else {
+			run = 0
+		}
+	}
+	return false
 }
 
 func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
@@ -215,7 +311,8 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 		if strings.TrimSpace(answer) == "" {
 			answer = vaNoAnswer
 		}
-		n.vaFinishLocalStream(p, answer)
+		// t538: микрофон — только после настоящего ответа модели, не на «Не расслышал».
+		n.vaFinishLocalStream(p, answer, heard != "" && answer != vaNoAnswer && answer != vaNotHeard)
 		slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", true, "heard_chars", len([]rune(heard)), "answer_chars", len([]rune(answer)), "voice", "local_stream")
 	}
 	pcm, err := decodeWhisperOpus(audio)
@@ -244,8 +341,8 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 		say("", vaNotHeard)
 		return
 	}
-	if text == "" {
-		slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "empty")
+	if text == "" || vaWakeOnly(text) {
+		slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "empty", "wake_only", text != "")
 		say("", vaNotHeard)
 		return
 	}

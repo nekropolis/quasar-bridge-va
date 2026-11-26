@@ -280,6 +280,7 @@ func (n *Native) vaStartLocalStream(p *nativeRequest, phrase string) (started bo
 	}
 	p.local = true
 	p.streaming = true
+	p.vaLocalStream = true
 	p.responseID = newID()
 	p.ttsID = newID()
 	p.progressTTS = p.ttsID
@@ -313,7 +314,7 @@ func (n *Native) vaStartLocalStream(p *nativeRequest, phrase string) (started bo
 }
 
 // vaFinishLocalStream appends the answer to the open speech stream and ends it.
-func (n *Native) vaFinishLocalStream(p *nativeRequest, text string) {
+func (n *Native) vaFinishLocalStream(p *nativeRequest, text string, listen bool) {
 	select {
 	case <-p.ctx.Done():
 		return
@@ -360,6 +361,11 @@ func (n *Native) vaFinishLocalStream(p *nativeRequest, text string) {
 		return
 	}
 	n.vaPlayUntil.Store(time.Now().Add(dur + time.Second).UnixNano())
+	// t538: our stream never carries ShouldListen (the station lights up but sends
+	// nothing); continue the dialogue like the eugene dialogue does, via listen_url.
+	if listen && n.LocalVoice.Listen != nil && reply.ListeningAllowed(p.ctx) {
+		n.scheduleLocalListen(p.id, n.vaFollowRule(), dur)
+	}
 	slog.Info("native_local_stream", "request", requestTag(p.id), "stage", "answer", "ok", true, "stream", id, "pages", len(pages), "audio_ms", dur.Milliseconds())
 }
 
@@ -390,12 +396,13 @@ func (n *Native) vaCloudLocalStream(p *nativeRequest, resolver FallbackResolver,
 		n.discardStale(p)
 		return
 	}
-	if ferr != nil || strings.TrimSpace(result.Answer) == "" {
+	answered := ferr == nil && strings.TrimSpace(result.Answer) != ""
+	if !answered {
 		n.discardSound(p)
 		result = Resolution{Route: "llm", Answer: vaNoAnswer}
 	}
 	if started {
-		n.vaFinishLocalStream(p, result.Answer)
+		n.vaFinishLocalStream(p, result.Answer, answered)
 		slog.Info("native_fallback", "request", requestTag(p.id), "route", "llm", "reason", reason, "voice", "local_stream")
 		return
 	}
@@ -496,4 +503,24 @@ func (n *Native) UpstreamLost() <-chan struct{} {
 		}
 	}()
 	return done
+}
+
+// vaFollowRule: the follow-up after our answer goes to the model in eugene voice
+// (the dialogue rule), like the eugene dialogue of t501.
+func (n *Native) vaFollowRule() string {
+	for _, r := range n.LocalVoice.Rules {
+		if r == "dark_side_to_llm" {
+			return r
+		}
+	}
+	if len(n.LocalVoice.Rules) > 0 {
+		return n.LocalVoice.Rules[0]
+	}
+	return "dark_side_to_llm"
+}
+
+// vaWakeOnly: local STT heard only the wake word («Алиса»), nothing to answer.
+func vaWakeOnly(text string) bool {
+	t := strings.Trim(strings.ToLower(strings.ReplaceAll(text, "ё", "е")), " .,!?…-")
+	return t == "алиса" || t == "алис" || t == "алиса алиса"
 }
