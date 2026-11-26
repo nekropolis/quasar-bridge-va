@@ -13,7 +13,12 @@ import (
 	"strings"
 	"time"
 
+	directive "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
+	response "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
+	header "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	server "github.com/skrashevich/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/wire"
 )
 
 // t532: когда ASR Яндекса недоступен (EventException asr_init_error), не ждём
@@ -146,6 +151,19 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 	if n.LocalVoice == nil || n.LocalVoice.STT == nil {
 		return
 	}
+	// t534: фраза-прикрытие звучит сразу (еуген), не дожидаясь модели: пока LLM
+	// думает, колонка уже говорит «На связи тёмная сторона».
+	phrase := strings.TrimSpace(n.LocalVoice.FallbackPhrase)
+	phraseSent := make(chan struct{})
+	go func() {
+		defer close(phraseSent)
+		if url, ok := n.synthLocal(phrase); ok {
+			if err := n.sendAudioAnswer(p, url, ""); err != nil {
+				slog.Warn("native_asr_fallback_voice", "request", requestTag(p.id), "stage", "phrase", "error", err.Error())
+			}
+		}
+	}()
+
 	timeout := time.Duration(n.LocalVoice.FallbackTimeoutMS) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 12 * time.Second
@@ -153,7 +171,7 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 	pcm, err := decodeWhisperOpus(audio)
 	if err != nil {
 		slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "decode", "error", err.Error())
-		n.fallbackAnswer(p, "", "Не расслышала, повтори, пожалуйста.")
+		n.fallbackAnswer(p, phraseSent, "", "Не расслышала, повтори, пожалуйста.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(p.ctx, timeout)
@@ -161,60 +179,98 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 	cancel()
 	if err != nil {
 		slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "stt", "error", err.Error())
-		n.fallbackAnswer(p, "", "Не расслышала, повтори, пожалуйста.")
+		n.fallbackAnswer(p, phraseSent, "", "Не расслышала, повтори, пожалуйста.")
 		return
 	}
 	if text == "" {
 		slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "empty")
-		n.fallbackAnswer(p, "", "Не расслышала, повтори, пожалуйста.")
+		n.fallbackAnswer(p, phraseSent, "", "Не расслышала, повтори, пожалуйста.")
 		return
 	}
 	slog.Info("native_asr_fallback_stt", "request", requestTag(p.id), "ok", true, "chars", len([]rune(text)))
 	resolver, ok := n.resolver.(FallbackResolver)
 	if !ok {
-		n.fallbackAnswer(p, text, "")
+		n.fallbackAnswer(p, phraseSent, text, "")
 		return
 	}
 	lctx := llm.WithHeader(p.ctx, "X-VA-Voice", "male")
 	result, err := resolver.Fallback(lctx, text)
 	if err != nil || strings.TrimSpace(result.Answer) == "" {
 		slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "llm")
-		n.fallbackAnswer(p, text, "Сейчас не получилось получить ответ локальной модели.")
+		n.fallbackAnswer(p, phraseSent, text, "Сейчас не получилось получить ответ локальной модели.")
 		return
 	}
 	slog.Info("native_asr_fallback_llm", "request", requestTag(p.id), "ok", true, "route", result.Route, "chars", len([]rune(result.Answer)))
-	n.fallbackAnswer(p, text, result.Answer)
+	n.fallbackAnswer(p, phraseSent, text, result.Answer)
 }
 
-// fallbackAnswer speaks text in eugene voice (local_voice TTS + audio_play).
-// If synthesis fails the text still goes out through Yandex TTS.
-func (n *Native) fallbackAnswer(p *nativeRequest, heard, answer string) {
+// synthLocal synthesizes text in eugene voice.
+func (n *Native) synthLocal(text string) (string, bool) {
+	text = SpeakableText(text)
+	if text == "" || n.LocalVoice == nil || n.LocalVoice.Synth == nil {
+		return "", false
+	}
+	timeout := time.Duration(n.LocalVoice.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 6 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	res, err := n.LocalVoice.Synth(ctx, text)
+	if err != nil {
+		return "", false
+	}
+	return res.URL, true
+}
+
+// sendAudioAnswer speaks one eugene MP3 on the speaker as an answer.
+func (n *Native) sendAudioAnswer(p *nativeRequest, url, text string) error {
+	speech, err := makeSoundDirective(soundURLRequest(url))
+	if err != nil {
+		return err
+	}
+	ans := &response.TAliceResponseProto{
+		Header: &response.TAliceResponseProto_THeader{
+			RequestId: new(p.applicationID()), ResponseId: new(newID()),
+			DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber()),
+		},
+		VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{
+			OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new("")}, HasVoiceResponse: true,
+		},
+		Response: &response.TAliceResponseProto_TResponse{Directives: []*directive.TDirective{speech}},
+	}
+	if strings.TrimSpace(text) != "" {
+		ans.Response.Cards = []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}
+	}
+	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{
+		Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id},
+		Event:  &server.TServerMessage_TEvent_AliceResponse{AliceResponse: ans},
+	}}}
+	b, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
+	if err != nil {
+		return err
+	}
+	return n.down(p.ctx, 2, b)
+}
+
+// fallbackAnswer finishes the fallback: waits for the phrase to be sent, then
+// speaks the answer in eugene voice; if synthesis fails, falls back to Yandex TTS.
+func (n *Native) fallbackAnswer(p *nativeRequest, phraseSent <-chan struct{}, heard, answer string) {
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
 		return
 	}
-	phrase := ""
-	if n.LocalVoice != nil {
-		phrase = strings.TrimSpace(n.LocalVoice.FallbackPhrase)
+	if url, ok := n.synthLocal(answer); ok {
+		<-phraseSent
+		if err := n.sendAudioAnswer(p, url, answer); err != nil {
+			slog.Warn("native_asr_fallback_voice", "request", requestTag(p.id), "stage", "answer", "error", err.Error())
+		}
+		slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", true, "heard_chars", len([]rune(heard)), "answer_chars", len([]rune(answer)), "voice", true)
+		return
 	}
-	speak := SpeakableText(strings.TrimSpace(phrase + " " + answer))
-	if n.LocalVoice != nil && n.LocalVoice.Synth != nil && speak != "" {
-		timeout := time.Duration(n.LocalVoice.TimeoutMS) * time.Millisecond
-		if timeout <= 0 {
-			timeout = 6 * time.Second
-		}
-		ctx, cancel := context.WithTimeout(p.ctx, timeout)
-		res, err := n.LocalVoice.Synth(ctx, speak)
-		cancel()
-		if err == nil {
-			err = n.queueSound(p.ctx, p, soundURLRequest(res.URL))
-		}
-		if err != nil {
-			slog.Warn("native_asr_fallback_voice", "request", requestTag(p.id), "ok", false, "error", err.Error())
-		}
-	}
-	if err := n.reply(p, Resolution{Route: "llm", Answer: speak}); err != nil {
+	<-phraseSent
+	if err := n.reply(p, Resolution{Route: "llm", Answer: answer}); err != nil {
 		slog.Warn("native_reply_failed", "request", requestTag(p.id))
 	}
-	slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", true, "heard_chars", len([]rune(heard)), "answer_chars", len([]rune(speak)), "voice", n.LocalVoice != nil && n.LocalVoice.Synth != nil)
+	slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", true, "heard_chars", len([]rune(heard)), "answer_chars", len([]rune(answer)), "voice", false)
 }
