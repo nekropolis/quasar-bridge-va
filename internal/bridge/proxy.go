@@ -103,6 +103,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for {
 			kind, data, err := src.Read(ctx)
 			if err != nil {
+				// t537: Яндекс закрыл сокет — дать сессии ответить колонке локально.
+				if direction == "server" && ctx.Err() == nil {
+					if h, ok := session.(interface{ UpstreamLost() <-chan struct{} }); ok {
+						t := time.NewTimer(45 * time.Second)
+						select {
+						case <-h.UpstreamLost():
+						case <-t.C:
+						case <-ctx.Done():
+						}
+						t.Stop()
+					}
+				}
 				return
 			}
 			if trace != nil {

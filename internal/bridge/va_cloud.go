@@ -216,6 +216,17 @@ func (n *Native) cloudFallbackUnlock(p *nativeRequest, reason string) {
 	if n.OnRoute != nil {
 		n.OnRoute(p.id, "llm")
 	}
+	// t537: облако сбоит (ошибка, таймаут, обрыв) — отвечаем нашей моделью голосом eugene
+	// одним потоком речи; отказы/пустые ответы (облако живо) — прежним путём.
+	if vaCloudFailureReason(reason) && n.localOpusEnabled() {
+		n.emitCloudLocked(p, reason)
+		query := p.text
+		n.mu.Unlock()
+		slog.Info("native_cloud_fallback", "request", requestTag(p.id), "reason", reason, "voice", "local_stream")
+		n.vaLocalBusy.Add(1)
+		n.wg.Go(func() { n.vaCloudLocalStream(p, resolver, query, reason) })
+		return
+	}
 	filler := ""
 	if n.CloudFallback != nil && n.CloudFallback.Enabled {
 		filler = strings.TrimSpace(n.CloudFallback.Filler)
@@ -230,7 +241,9 @@ func (n *Native) cloudFallbackUnlock(p *nativeRequest, reason string) {
 	query := p.text
 	n.mu.Unlock()
 	slog.Info("native_cloud_fallback", "request", requestTag(p.id), "reason", reason, "filler", filler != "")
+	n.vaLocalBusy.Add(1)
 	n.wg.Go(func() {
+		defer n.vaLocalBusy.Add(-1)
 		stop := func() {}
 		if filler != "" {
 			stop = n.progressAfter(p, 0)

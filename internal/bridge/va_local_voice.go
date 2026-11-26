@@ -39,6 +39,9 @@ type LocalVoice struct {
 	// StreamEndpoint (t535): core отдаёт один MP3-поток — фраза сразу, ответ дописывается.
 	StreamEndpoint string `json:"stream_endpoint,omitempty"`
 	StreamChat     string `json:"stream_chat,omitempty"`
+	// OpusEndpoint (t537): core POST /v1/voice/opus {"text"} → моно Ogg/Opus; при сбое облака
+	// фраза и ответ идут колонке одним потоком речи (TtsSpeak), а не audio_play.
+	OpusEndpoint string `json:"opus_endpoint,omitempty"`
 
 	ListenURL     string `json:"listen_url,omitempty"`
 	ListenSlackMS int    `json:"listen_slack_ms,omitempty"`
@@ -53,6 +56,8 @@ type LocalVoice struct {
 	STT func(ctx context.Context, pcm []byte) (string, error) `json:"-"`
 	// Stream posts PCM s16le 16 kHz and returns a growing MP3 URL.
 	Stream func(ctx context.Context, pcm []byte) (string, error) `json:"-"`
+	// Opus synthesizes mono Ogg/Opus. Set by main from OpusEndpoint.
+	Opus func(ctx context.Context, text string) ([]byte, error) `json:"-"`
 }
 
 // SynthResult is the playable answer and its length.
@@ -98,6 +103,12 @@ func (v LocalVoice) Validate() error {
 		u, err := url.Parse(v.StreamEndpoint)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return errors.New("local_voice.stream_endpoint must be an http(s) URL")
+		}
+	}
+	if v.OpusEndpoint != "" {
+		u, err := url.Parse(v.OpusEndpoint)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return errors.New("local_voice.opus_endpoint must be an http(s) URL")
 		}
 	}
 	if v.FallbackTimeoutMS < 0 || v.FallbackTimeoutMS > 30000 {

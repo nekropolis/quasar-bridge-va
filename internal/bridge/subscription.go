@@ -310,3 +310,13 @@ func (s *subscriptionSession) Close() {
 		s.delegate.Close()
 	}
 }
+
+// UpstreamLost forwards the t537 notification to the native session.
+func (s *subscriptionSession) UpstreamLost() <-chan struct{} {
+	if h, ok := s.delegate.(interface{ UpstreamLost() <-chan struct{} }); ok {
+		return h.UpstreamLost()
+	}
+	done := make(chan struct{})
+	close(done)
+	return done
+}

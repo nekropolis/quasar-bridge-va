@@ -114,6 +114,7 @@ func (n *Native) asrFallbackEnabled() bool {
 func (n *Native) asrFallbackRequestLocked() *nativeRequest {
 	p := n.lastVoice
 	if p == nil || p.canceled || p.started || p.ctx.Err() != nil || len(p.audioInput) == 0 {
+		p = nil // t537: never fall back on a request already answered or without audio
 		for _, q := range n.requests {
 			if q.canceled || q.isText || q.started || q.ctx.Err() != nil || len(q.audioInput) == 0 {
 				continue
@@ -145,11 +146,13 @@ func (n *Native) startASRFallback() bool {
 	}
 	n.takeCloudLocked(p, true)
 	n.mu.Unlock()
+	n.vaLocalBusy.Add(1)
 	slog.Info("native_asr_fallback", "request", requestTag(p.id), "stage", "wait_audio")
 	if p.gated {
 		_ = n.sendCancel(p.ctx, p.id)
 	}
 	n.wg.Go(func() {
+		defer n.vaLocalBusy.Add(-1)
 		// Колонка продолжает отдавать звук ещё 2-4 с после asr_init_error: ждём
 		// конца реплики (StreamControl) или таймаута, иначе распознаем обрывок.
 		n.mu.Lock()
@@ -188,14 +191,41 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 	if timeout <= 0 {
 		timeout = 12 * time.Second
 	}
+	// t537: сразу открываем один поток речи и говорим фразу голосом eugene, ответ
+	// модели допишется в тот же поток. Нет Opus — прежний путь одним MP3.
+	streamed := false
+	if n.localOpusEnabled() {
+		started, err := n.vaStartLocalStream(p, n.vaFallbackPhrase())
+		switch {
+		case started && err != nil:
+			slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "phrase", "error", err.Error())
+			p.cancel()
+			return
+		case started:
+			streamed = true
+		default:
+			slog.Warn("native_local_stream", "request", requestTag(p.id), "stage", "phrase", "ok", false, "fallback", "mp3", "error", err.Error())
+		}
+	}
+	say := func(heard, answer string) {
+		if !streamed {
+			n.fallbackAnswer(p, heard, answer)
+			return
+		}
+		if strings.TrimSpace(answer) == "" {
+			answer = vaNoAnswer
+		}
+		n.vaFinishLocalStream(p, answer)
+		slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", true, "heard_chars", len([]rune(heard)), "answer_chars", len([]rune(answer)), "voice", "local_stream")
+	}
 	pcm, err := decodeWhisperOpus(audio)
 	if err != nil {
 		slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "decode", "error", err.Error())
-		n.fallbackAnswer(p, "", "Не расслышал, повтори, пожалуйста.")
+		say("", vaNotHeard)
 		return
 	}
 	s16 := pcmToS16(pcm)
-	if n.LocalVoice.Stream != nil {
+	if !streamed && n.LocalVoice.Stream != nil {
 		sctx, scancel := context.WithTimeout(p.ctx, timeout)
 		url, serr := n.LocalVoice.Stream(sctx, s16)
 		scancel()
@@ -211,29 +241,29 @@ func (n *Native) runASRFallback(p *nativeRequest, audio []byte) {
 	cancel()
 	if err != nil {
 		slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "stt", "error", err.Error())
-		n.fallbackAnswer(p, "", "Не расслышал, повтори, пожалуйста.")
+		say("", vaNotHeard)
 		return
 	}
 	if text == "" {
 		slog.Info("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "empty")
-		n.fallbackAnswer(p, "", "Не расслышал, повтори, пожалуйста.")
+		say("", vaNotHeard)
 		return
 	}
 	slog.Info("native_asr_fallback_stt", "request", requestTag(p.id), "ok", true, "chars", len([]rune(text)))
 	resolver, ok := n.resolver.(FallbackResolver)
 	if !ok {
-		n.fallbackAnswer(p, text, "")
+		say(text, "")
 		return
 	}
 	lctx := llm.WithHeader(p.ctx, "X-VA-Voice", "male")
 	result, err := resolver.Fallback(lctx, text)
 	if err != nil || strings.TrimSpace(result.Answer) == "" {
 		slog.Warn("native_asr_fallback", "request", requestTag(p.id), "ok", false, "stage", "llm")
-		n.fallbackAnswer(p, text, "Сейчас не получилось получить ответ локальной модели.")
+		say(text, vaNoAnswer)
 		return
 	}
 	slog.Info("native_asr_fallback_llm", "request", requestTag(p.id), "ok", true, "route", result.Route, "chars", len([]rune(result.Answer)))
-	n.fallbackAnswer(p, text, result.Answer)
+	say(text, result.Answer)
 }
 
 // answerStream queues one growing MP3 as the answer (the phrase is already playing).

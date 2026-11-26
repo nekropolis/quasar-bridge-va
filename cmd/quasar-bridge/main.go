@@ -395,6 +395,9 @@ func main() {
 			if lv.ListenURL != "" {
 				lv.Listen = bridge.HTTPListen(lv.ListenURL)
 			}
+			if lv.OpusEndpoint != "" { // t537: голос eugene потоком речи при сбое облака
+				lv.Opus = bridge.HTTPOpus(lv.OpusEndpoint, os.Getenv("QUASAR_LLM_API_KEY"), time.Duration(lv.TimeoutMS)*time.Millisecond)
+			}
 			localVoice = &lv
 			slog.Info("local_voice", "enabled", true, "rules", len(lv.Rules))
 		}

@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -15,6 +14,7 @@ import (
 	"strings"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -166,11 +166,26 @@ type Native struct {
 	lastAnswer       time.Time
 	// Events records route, cloud and follow-up outcomes. Nil disables it.
 	Events *EventSink
+	// t537: локальные ответы при сбое облака — сколько ещё идёт, до какого времени
+	// звучит ответ, и что сокет Яндекса закрыт (отправка вверх тогда no-op).
+	vaLocalBusy atomic.Int32
+	vaPlayUntil atomic.Int64
+	vaUpLost    atomic.Bool
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
 	ctx, cancel := context.WithCancel(ctx)
-	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}, cloudStreams: map[uint32]*nativeRequest{}}
+	n := &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}, cloudStreams: map[uint32]*nativeRequest{}}
+	if up != nil { // t537: после обрыва Яндекса колонке отвечаем локально, вверх ничего не шлём
+		raw := up
+		n.up = func(ctx context.Context, k websocket.MessageType, b []byte) error {
+			if n.vaUpLost.Load() {
+				return nil
+			}
+			return raw(ctx, k, b)
+		}
+	}
+	return n
 }
 func (n *Native) Close() {
 	n.cancel()
@@ -474,8 +489,9 @@ func (n *Native) server(ctx context.Context, k websocket.MessageType, data []byt
 		}
 		slog.Warn("native_server_exception", "kind", f.Kind(), "raw", raw)
 	}
-	// t532: ASR Яндекса недоступен — распознаём локально и отвечаем нашей LLM голосом eugene.
-	if f.Kind() == "EventException" && n.asrFallbackEnabled() && bytes.Contains(data, []byte("asr_init_error")) && n.startASRFallback() {
+	// t532/t537: сбой облака (EventException, Error, GoAway): запрос на стадии ASR распознаём
+	// локально, запрос, уже ушедший в облако и без ответа, отдаём нашей модели — голосом eugene.
+	if (f.Kind() == "EventException" || f.Kind() == "Error" || f.Kind() == "GoAway") && n.vaCloudFailureFrame(f, data) {
 		return nil
 	}
 	if f.Server == nil {
