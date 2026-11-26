@@ -116,6 +116,8 @@ func TestStartASRFallbackAnswersInLocalVoice(t *testing.T) {
 	if !n.startASRFallback() {
 		t.Fatal("fallback not started")
 	}
+	// Колонка закончила реплику: дальше fallback не ждёт.
+	n.markAudioDone(1)
 	deadline := time.Now().Add(3 * time.Second)
 	for len(synths) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)

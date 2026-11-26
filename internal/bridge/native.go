@@ -59,6 +59,7 @@ type nativeRequest struct {
 	audioInputDone                  bool
 	inputWhisper                    bool
 	asrFallback                     bool // t532: Yandex ASR упал → локальный STT + наша LLM
+	audioDone                       chan struct{} // закрывается, когда колонка закончила отдавать аудио
 	afterAnswer                     bool
 	streaming                       bool
 	listenOnStreamStart             bool

@@ -50,6 +50,10 @@ func (n *Native) markAudioDone(streamID int64) {
 	for _, p := range n.requests {
 		if p.header != nil && p.header.GetStreamId() == streamID && !p.audioInputDone {
 			p.audioInputDone = true
+			if p.audioDone != nil {
+				close(p.audioDone)
+				p.audioDone = nil
+			}
 		}
 	}
 }

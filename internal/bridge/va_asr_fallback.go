@@ -100,19 +100,40 @@ func (n *Native) startASRFallback() bool {
 	p.asrFallback = true
 	p.started = true
 	p.local = true
-	p.audioInputDone = true
-	audio := p.audioInput
-	p.audioInput = nil
+	done := make(chan struct{})
+	p.audioDone = done
 	if p.cloudTimer != nil {
 		p.cloudTimer.Stop()
 	}
 	n.takeCloudLocked(p, true)
 	n.mu.Unlock()
-	slog.Info("native_asr_fallback", "request", requestTag(p.id), "audio_bytes", len(audio))
+	slog.Info("native_asr_fallback", "request", requestTag(p.id), "stage", "wait_audio")
 	if p.gated {
 		_ = n.sendCancel(p.ctx, p.id)
 	}
-	n.wg.Go(func() { n.runASRFallback(p, audio) })
+	n.wg.Go(func() {
+		// Колонка продолжает отдавать звук ещё 2-4 с после asr_init_error: ждём
+		// конца реплики (StreamControl) или таймаута, иначе распознаем обрывок.
+		timer := time.NewTimer(6 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+		case <-p.ctx.Done():
+			return
+		}
+		n.mu.Lock()
+		if p.audioInputDone && p.audioDone == done {
+			close(done)
+			p.audioDone = nil
+		}
+		audio := p.audioInput
+		p.audioInput = nil
+		p.audioInputDone = true
+		n.mu.Unlock()
+		slog.Info("native_asr_fallback", "request", requestTag(p.id), "stage", "stt", "audio_bytes", len(audio))
+		n.runASRFallback(p, audio)
+	})
 	return true
 }
 
