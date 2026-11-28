@@ -158,6 +158,7 @@ type Native struct {
 	Ellipsis *EllipsisFollowup
 	// LocalVoice speaks answers of selected rules with our TTS (patch 0003).
 	LocalVoice *LocalVoice
+	dumper     *ttsDumper // t547: диагностика громкости TTS (VA_TTS_DUMP=1)
 	// localListen/localFollow*: pending mic opening after a local-voice MP3
 	// and the rule kept for the follow-up it opens (patch 0003).
 	localListen      *time.Timer
@@ -505,6 +506,7 @@ func (n *Native) server(ctx context.Context, k websocket.MessageType, data []byt
 		return nil
 	}
 	if f.Server == nil {
+		n.dumpTTSAudio(data) // t547: диагностика громкости TTS (VA_TTS_DUMP=1)
 		if len(data) >= 4 {
 			n.mu.Lock()
 			p := n.streams[binary.BigEndian.Uint32(data)]
